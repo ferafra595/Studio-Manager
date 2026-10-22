@@ -15,7 +15,7 @@ const secureCookie=(value,maxAge)=>`sm_session=${value}; HttpOnly; Secure; SameS
 async function sessionUser(db,request){const token=cookie(request);if(!/^[a-f0-9]{64}$/.test(token))return null;const hash=await digest(token);const row=await db.prepare('SELECT u.id,u.email,u.display_name,u.role,s.token_hash FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.active=1').bind(hash,Math.floor(Date.now()/1000)).first();return row||null}
 export async function onRequest({request,env,context}){
  const pathname=new URL(request.url).pathname;
- if(!pathname.startsWith('/api/'))return context.next();
+ if(!pathname.startsWith('/api/'))return json({error:'Percorso non API'},404);
  const path=pathname.slice('/api/'.length);
  if(!env.DB)return json({error:'Database D1 non configurato.'},503);
  const db=env.DB, method=request.method;
