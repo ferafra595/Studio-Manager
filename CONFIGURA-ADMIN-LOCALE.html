@@ -1,0 +1,40 @@
+<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title>Studio Manager - Configurazione privata Admin</title>
+<style>body{font:16px system-ui;max-width:640px;margin:35px auto;padding:20px;color:#19334a}input,textarea,button{display:block;width:100%;box-sizing:border-box;padding:12px;margin:9px 0 20px;border:1px solid #cad6e0;border-radius:8px}button{background:#176c8b;color:white;cursor:pointer}textarea{height:150px;font:12px monospace}small{color:#526779}.warn{background:#fff4dc;padding:12px;border-radius:8px}</style>
+<h1>Studio Manager</h1><h2>Configurazione privata Super Admin</h2>
+<p class="warn">Questo file funziona esclusivamente sul tuo computer: non caricarlo su GitHub o sul sito. Non inserire dati sanitari.</p>
+<label>Email amministratore<input id="email" type="email" autocomplete="off"></label>
+<label>Password personale (almeno 16 caratteri)<input id="password" type="password" autocomplete="new-password"></label>
+<button id="generate">Genera configurazione privata</button>
+<div id="result" hidden><h3>1. Google Authenticator</h3><p>Apri Google Authenticator → + → Inserisci chiave di configurazione → Basato sull'ora.</p>
+<label>Chiave segreta (non condividere)<input id="secret" readonly></label>
+<h3>2. Cloudflare D1</h3><p>Copia l'istruzione seguente nella Console del database <strong>studio-manager-db</strong> ed eseguila una sola volta.</p>
+<textarea id="sql" readonly></textarea><button id="copy">Copia SQL</button><p>3. Torna al sito Studio Manager e accedi con email, password e codice di Google Authenticator.</p>
+<p><small>Non salvare la chiave o il codice SQL su GitHub. Custodisci la chiave TOTP in un gestore password e cancella le copie temporanee.</small></p></div><p id="msg" role="status"></p>
+<script>
+const $=id=>document.getElementById(id);
+const hex=a=>Array.from(new Uint8Array(a),b=>b.toString(16).padStart(2,'0')).join('');
+const b64=a=>btoa(String.fromCharCode(...a));
+const quote=s=>"'"+s.replaceAll("'","''")+"'";
+$('generate').onclick=async()=>{
+try{
+if(!crypto?.subtle)throw Error('Questo browser non supporta la crittografia in modalità file locale. Apri il file con Chrome o Edge aggiornato.');
+const email=$('email').value.trim().toLowerCase(),password=$('password').value;
+if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254||password.length<16||password.length>256)throw Error('Inserisci una email valida e una password tra 16 e 256 caratteri.');
+const salt=crypto.getRandomValues(new Uint8Array(16));
+const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']);
+const hash=hex(await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations:310000},key,256));
+const bytes=crypto.getRandomValues(new Uint8Array(20)),alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+let bits=0,value=0,secret='';
+for(const byte of bytes){value=(value<<8)|byte;bits+=8;while(bits>=5){bits-=5;secret+=alphabet[(value>>>bits)&31]}}
+const id=crypto.randomUUID();
+$('secret').value=secret;
+$('sql').value=`INSERT INTO users (id,email,display_name,role,password_salt,password_hash,totp_secret,active) SELECT ${quote(id)},${quote(email)},'Super Admin','admin',${quote(b64(salt))},${quote(hash)},${quote(secret)},1 WHERE NOT EXISTS (SELECT 1 FROM users WHERE role='admin');`;
+$('password').value='';
+$('result').hidden=false;
+$('msg').textContent='Configurazione generata localmente. Copia la chiave nell’app autenticatore prima di chiudere.';
+}catch(e){$('msg').textContent=e.message}
+};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('sql').value);$('msg').textContent='SQL copiato.'}catch{$('sql').select();$('msg').textContent='Testo selezionato: premi Ctrl+C per copiarlo.'}};
+</script></html>
