@@ -1,2 +1,8 @@
-name = "studio-manager-preview"
+name = "studio-manager-djt"
 pages_build_output_dir = "./dist"
+compatibility_date = "2026-10-22"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "studio-manager-db"
+database_id = "ce1d8957-e5b3-4c37-81c0-ffd6b7fd70d9"
