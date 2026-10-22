@@ -1,6 +1,7 @@
 node_modules/
 dist/
-.env
-.env.*
-!.env.example
-.DS_Store
+.env*
+.dev.vars*
+admin-setup.PRIVATO.sql
+*.sqlite
+*.db
