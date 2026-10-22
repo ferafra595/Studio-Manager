@@ -1,0 +1,2 @@
+name = "studio-manager-preview"
+pages_build_output_dir = "./dist"
