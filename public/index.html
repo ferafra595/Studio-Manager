@@ -232,17 +232,5 @@ renderAccounting=function(){v53OldAccounting();let c=document.getElementById('co
  call('/api/me').then(x=>enter(x.user)).catch(()=>{});
 })();
 </script>
-<script>
-// PATCH 01 — autenticazione server-side. I dati del gestionale restano demo non persistenti.
-(function(){
- const card=document.querySelector('#login .login-card');
- card.innerHTML=`<h1>Studio Manager</h1><p class="muted">Accesso con account personale</p><div class="alert">AMBIENTE DI TEST · NON INSERIRE DATI SANITARI REALI. Le sezioni gestionali restano dimostrative.</div><form id="secure-login"><div class="field"><label for="sm-email">Email</label><input id="sm-email" type="email" autocomplete="username" required></div><div class="field"><label for="sm-password">Password</label><input id="sm-password" type="password" autocomplete="current-password" required></div><div class="field"><label for="sm-code">Codice autenticatore (6 cifre)</label><input id="sm-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></div><button class="primary" id="sm-submit">Accedi</button><p class="muted" id="loginerr" role="status"></p></form>`;
- async function call(url,options={}){const response=await fetch(url,{credentials:'same-origin',cache:'no-store',...options});let data={};try{data=await response.json()}catch{}if(!response.ok)throw Error(data.error||'Servizio non disponibile');return data}
- function enter(user){role=user.role;document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';document.getElementById('who').textContent=user.name+' · '+({admin:'Super Admin',segreteria:'Segreteria',specialista:'Specialista'}[user.role]||user.role);page('dashboard');v5SearchUI();v5LimitNav()}
- document.getElementById('secure-login').addEventListener('submit',async e=>{e.preventDefault();const btn=document.getElementById('sm-submit');btn.disabled=true;document.getElementById('loginerr').textContent='Verifica credenziali…';try{const result=await call('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:document.getElementById('sm-email').value,password:document.getElementById('sm-password').value,code:document.getElementById('sm-code').value})});document.getElementById('sm-password').value='';document.getElementById('sm-code').value='';enter(result.user)}catch(err){document.getElementById('loginerr').textContent=err.message}finally{btn.disabled=false}});
- login=function(){document.getElementById('secure-login').requestSubmit()};
- logout=async function(){try{await call('/api/logout',{method:'POST'})}catch{}document.getElementById('app').style.display='none';document.getElementById('login').style.display='grid';v5CloseSearch();document.getElementById('sm-password').value='';document.getElementById('sm-code').value=''};
- call('/api/me').then(x=>enter(x.user)).catch(()=>{});
-})();
-</script>
+
 </body></html>
