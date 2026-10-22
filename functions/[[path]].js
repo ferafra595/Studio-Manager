@@ -20,34 +20,6 @@ export async function onRequest({request,env,context}){
  if(!env.DB)return json({error:'Database D1 non configurato.'},503);
  const db=env.DB, method=request.method;
  if(path==='health'&&method==='GET')return json({status:'ready'});
- // Inizializzazione UNA SOLA VOLTA, protetta da BOOTSTRAP_TOKEN impostato come Secret Cloudflare.
- if(path==='setup/status'&&method==='GET'){
-  const existing=await db.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
-  return json({configured:!!existing,available:!existing&&!!env.BOOTSTRAP_TOKEN});
- }
- if(path==='setup/prepare'&&method==='POST'||path==='setup/complete'&&method==='POST'){
-  const origin=request.headers.get('origin');
-  if(origin!==new URL(request.url).origin)return json({error:'Origine non consentita'},403);
-  if(!env.BOOTSTRAP_TOKEN||String(env.BOOTSTRAP_TOKEN).length<32)return json({error:'Configurare il Secret BOOTSTRAP_TOKEN di almeno 32 caratteri'},503);
-  let body;try{body=await request.json()}catch{return json({error:'Richiesta non valida'},400)}
-  const supplied=String(body.bootstrapToken||'');
-  if(supplied.length>1024||!safeEq(await digest(supplied),await digest(String(env.BOOTSTRAP_TOKEN))))return json({error:'Codice inizializzazione non valido'},403);
-  const existing=await db.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
-  if(existing)return json({error:'Amministratore già configurato. Inizializzazione disabilitata.'},409);
-  if(path==='setup/prepare'){
-   const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', bytes=crypto.getRandomValues(new Uint8Array(20));let bits=0,value=0,secret='';
-   for(const byte of bytes){value=(value<<8)|byte;bits+=8;while(bits>=5){bits-=5;secret+=alphabet[(value>>>bits)&31]}}
-   return json({secret});
-  }
-  const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||''),secret=String(body.secret||'').trim(),code=String(body.code||'');
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254||password.length<16||password.length>256||!/^[A-Z2-7]{32}$/.test(secret)||!await validTotp(secret,code))return json({error:'Dati non validi o codice autenticatore errato'},400);
-  const salt=b64(crypto.getRandomValues(new Uint8Array(16))),hash=await passwordHash(password,salt);
-  // Inserimento condizionale atomico: due richieste concorrenti non creano due admin.
-  const result=await db.prepare("INSERT INTO users(id,email,display_name,role,password_salt,password_hash,totp_secret,active) SELECT ?,?,'Super Admin','admin',?,?,?,1 WHERE NOT EXISTS (SELECT 1 FROM users WHERE role='admin')").bind(crypto.randomUUID(),email,salt,hash,secret).run();
-  if(result.meta?.changes!==1)return json({error:'Inizializzazione già completata'},409);
-  return json({ok:true});
- }
-
  if(path==='login'&&method==='POST'){
   const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return json({error:'Origine non consentita'},403);
   let body;try{body=await request.json()}catch{return json({error:'Richiesta non valida'},400)}
