@@ -29,6 +29,7 @@ export async function phase1({request,env},path){
  const db=env.DB;if(!db)return fail('Binding DB non configurato',503);
  const method=request.method;
  try{
+ if(method==='GET'&&path==='/api/v1/diagnostics'){const names=await all(db,"SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'sm_%' ORDER BY name");const required=['sm_disciplines','sm_specialists','sm_services','sm_patients','sm_assignments','sm_schedules','sm_blocks','sm_appointments','sm_clinical_notes','sm_shares','sm_audit','sm_documents'];return reply({ready:required.every(x=>names.some(n=>n.name===x)),missing:required.filter(x=>!names.some(n=>n.name===x))});}
  if(method==='GET'&&path==='/api/v1/bootstrap'){
   const [disciplines,specialists,services,patients,appointments,schedules,blocks]=await Promise.all([
    all(db,'SELECT * FROM sm_disciplines ORDER BY name'),all(db,'SELECT * FROM sm_specialists ORDER BY name'),all(db,'SELECT * FROM sm_services ORDER BY name'),all(db,'SELECT * FROM sm_patients ORDER BY last_name,first_name LIMIT 5000'),all(db,'SELECT * FROM sm_appointments ORDER BY start_at DESC LIMIT 10000'),all(db,'SELECT * FROM sm_schedules ORDER BY specialist_id,weekday,start_time'),all(db,'SELECT * FROM sm_blocks ORDER BY start_at DESC LIMIT 1000')]);
@@ -68,7 +69,7 @@ export async function phase1({request,env},path){
   const b=await body(request);requireFields(b,['name']);const id=uid();await db.prepare('INSERT INTO sm_disciplines(id,name) VALUES(?,?)').bind(id,clean(b.name)).run();await audit(db,'create','discipline',id);return reply({id},201);
  }
  if(method==='POST'&&path==='/api/v1/specialists'){
-  const b=await body(request);requireFields(b,['name']);const id=uid();await db.prepare('INSERT INTO sm_specialists(id,name,discipline_id,email,phone) VALUES(?,?,?,?,?)').bind(id,clean(b.name),b.discipline_id||null,clean(b.email),clean(b.phone)).run();await audit(db,'create','specialist',id);return reply({id},201);
+  const b=await body(request);requireFields(b,['name']);if(b.email&& !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email))return fail('Email specialista non valida');const id=uid();await db.prepare('INSERT INTO sm_specialists(id,name,discipline_id,email,phone) VALUES(?,?,?,?,?)').bind(id,clean(b.name),b.discipline_id||null,clean(b.email),clean(b.phone)).run();await audit(db,'create','specialist',id);return reply({id},201);
  }
  if(method==='PATCH'&&path.startsWith('/api/v1/specialists/')){
   const id=path.split('/').pop(),b=await body(request);const s=await one(db,'SELECT * FROM sm_specialists WHERE id=?',id);if(!s)return fail('Specialista non trovato',404);
@@ -158,5 +159,5 @@ export async function phase1({request,env},path){
   await audit(db,'import','patient','',`Creati ${created}; scartati ${skipped.length}`);return reply({created,skipped});
  }
  return fail('Endpoint inesistente',404);
- }catch(e){console.error('Studio Manager phase1 error',e?.message||String(e));return fail(/UNIQUE constraint/.test(String(e))?'Valore già esistente':/FOREIGN KEY constraint/.test(String(e))?'Riferimento non valido':e?.message?.startsWith('Campo obbligatorio')?e.message:'Operazione non riuscita. Controlla i dati o la migrazione D1.',/UNIQUE constraint/.test(String(e))?409:400)}
+ }catch(e){console.error('Studio Manager phase1 error',e?.message||String(e));return fail(/UNIQUE constraint/.test(String(e))?'Valore già esistente':/FOREIGN KEY constraint/.test(String(e))?'Riferimento non valido':/no such table/.test(String(e))?'Database non inizializzato: eseguire la migrazione 0002_phase1.sql in D1':/no such column/.test(String(e))?'Schema D1 non aggiornato: verifica migrazione':e?.message?.startsWith('Campo obbligatorio')?e.message:'Errore salvataggio sul server. Controlla i log Cloudflare.',/UNIQUE constraint/.test(String(e))?409:400)}
 }
