@@ -13,3 +13,6 @@
 .availability-list li{break-inside:avoid;margin-bottom:5px}
 .availability-list small{color:#785c42}
 @media(max-width:700px){.availability-list{columns:1}}
+
+/* Gestione specialisti - orario settimanale */
+.week-editor{display:grid;gap:12px;margin:18px 0}.week-day{border:1px solid #dbe6ef;border-radius:12px;padding:12px;background:#fff}.week-day-head,.week-slot{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.week-day-head{justify-content:space-between;margin-bottom:10px}.week-day-head label{display:flex;align-items:center;gap:8px}.week-slots{display:grid;gap:8px}.week-slot input[type=time]{min-width:125px;max-width:170px}.week-slot .week-remove{padding:8px 12px}.list-item .row{flex-wrap:wrap}.week-editor input[type=checkbox]{width:18px;height:18px}
