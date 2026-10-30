@@ -72,7 +72,32 @@ function openBlock(sid){const fields=field('Dal','start_at','','datetime-local',
 function renderSettings(){$('#main').innerHTML=`<div class="top"><div><h2>Impostazioni</h2><p class="sub">Configurazione e controlli</p></div></div><div class="card"><h2>Accesso</h2><p>Unico account <b>ADMIN</b> tramite Secrets Cloudflare. Dashboard di segreteria e specialista previste, ma <b>non abilitate</b> finché non esistono identità e permessi individuali verificati dal server.</p></div><div class="card"><h2>Stato funzionalità</h2><div class="list"><div class="list-item">Anagrafica, specialisti, agenda, prestazioni, note demo <span class="pill">D1</span></div><div class="list-item">Importazione CSV <span class="pill">Attiva (batch 250)</span></div><div class="list-item">Documenti e fotografie R2 <span class="pill">Richiede binding FILES</span></div><div class="list-item">Permessi specialisti / segreteria <span class="pill annullato">Da integrare</span></div><div class="list-item">Fatture e contabilità <span class="pill annullato">Fase 2</span></div></div></div><div class="card"><h2>Registro attività</h2><button id="load-audit">Carica ultime 150 operazioni</button><div id="audit"></div></div>`;$('#load-audit').onclick=async()=>{try{const d=await api('v1/audit');$('#audit').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Quando</th><th>Azione</th><th>Elemento</th></tr></thead><tbody>${d.items.map(x=>`<tr><td>${esc(x.created_at)}</td><td>${esc(x.action)}</td><td>${esc(x.entity)} · ${esc(x.entity_id)}</td></tr>`).join('')}</tbody></table></div>`}catch(e){toast(e.message)}}}
 function parseCSV(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return [];const delim=(lines[0].split(';').length>lines[0].split(',').length)?';':',';const split=line=>{let fields=[],v='',q=false;for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'){if(q&&line[i+1]==='"'){v+='"';i++}else q=!q}else if(c===delim&&!q){fields.push(v);v=''}else v+=c}fields.push(v);return fields.map(x=>x.trim())};const headers=split(lines.shift()).map(x=>x.toLowerCase().replace(/\s/g,'_'));return lines.map(l=>{const values=split(l),o={};headers.forEach((h,i)=>o[h]=values[i]||'');return {first_name:o.nome||o.first_name,last_name:o.cognome||o.last_name,cf:o.cf||o.codice_fiscale,phone:o.telefono||o.phone,email:o.email}})}
 function importCSV(){modal('Importa pazienti CSV',`<div class="notice">Solo dati fittizi in fase di test. Colonne richieste: <b>nome;cognome;cf;telefono;email</b>. Controllo duplicati per codice fiscale.</div><input type="file" id="csv-file" accept=".csv,text/csv"><p id="csv-info" class="sub"></p><button class="primary" id="csv-go" disabled>Importa</button><div id="csv-result"></div>`,()=>{let rows=[];$('#csv-file').onchange=async e=>{const f=e.target.files[0];if(!f)return;if(f.size>2_000_000){toast('File troppo grande');return}rows=parseCSV(await f.text());$('#csv-info').textContent=`${rows.length} righe lette`;$('#csv-go').disabled=!rows.length};$('#csv-go').onclick=async()=>{let created=0,skipped=[];try{for(let i=0;i<rows.length;i+=250){const d=await api('v1/import','POST',{rows:rows.slice(i,i+250)});created+=d.created;skipped.push(...d.skipped.map(x=>({...x,row:x.row+i})))}$('#csv-result').textContent=`Importati: ${created}. Scartati: ${skipped.length}. ${skipped.slice(0,10).map(x=>'Riga '+x.row+': '+x.reason).join('; ')}`;await refresh()}catch(e){toast(e.message)}}})}
-async function init(){try{await api('me');$('#login').hidden=true;$('#app').hidden=false;await refresh()}catch{$('#login').hidden=false;$('#app').hidden=true}}
+async function init(){
+  try {
+    await api('me');
+  } catch (err) {
+    $('#login').hidden=false;
+    $('#app').hidden=true;
+    $('#login-error').textContent=err.message==='Accesso richiesto'?'':err.message;
+    return;
+  }
+  $('#login').hidden=true;
+  $('#app').hidden=false;
+  try {
+    await refresh();
+  } catch (err) {
+    $('#title').textContent='Configurazione da completare';
+    $('#crumb').textContent='VERIFICA DATABASE';
+    $('#main').innerHTML='';
+    const card=document.createElement('section');card.className='card';
+    const heading=document.createElement('h2');heading.textContent='Accesso ADMIN riuscito';
+    const intro=document.createElement('p');intro.textContent='Non è stato possibile caricare i dati della Fase 1. La sessione è ancora attiva: non devi modificare email o password.';
+    const detail=document.createElement('p');detail.className='error';detail.textContent='Dettaglio: '+err.message;
+    const hint=document.createElement('p');hint.textContent='Controlla di aver eseguito migrations/0002_phase1.sql sul database D1 di produzione e che il binding DB punti al database corretto.';
+    const retry=document.createElement('button');retry.className='primary';retry.textContent='Riprova caricamento';retry.onclick=()=>init();
+    card.append(heading,intro,detail,hint,retry);$('#main').append(card);
+  }
+}
 $('#login-form').onsubmit=async e=>{e.preventDefault();$('#login-error').textContent='';const f=Object.fromEntries(new FormData(e.target));try{await api('login','POST',f);await init()}catch(err){$('#login-error').textContent=err.message}};
 $('#logout').onclick=async()=>{try{await api('logout','POST')}finally{location.reload()}};
 $('#close').onclick=close;$('#overlay').onclick=e=>{if(e.target===$('#overlay'))close()};
