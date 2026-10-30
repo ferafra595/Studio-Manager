@@ -1,3 +1,4 @@
+import {phase1} from './phase1.js';
 // Studio Manager - Cloudflare Pages Functions. ACCESSO DEMO SOLO ADMIN.
 // Le credenziali risiedono esclusivamente in Cloudflare Secrets: ADMIN_EMAIL e ADMIN_PASSWORD.
 const encoder = new TextEncoder();
@@ -23,6 +24,11 @@ export async function onRequest({request,env}){
   const email=String(body?.email||'').trim().toLowerCase(),password=String(body?.password||'');
   if(email.length>254||password.length>1024||!same(email,env.ADMIN_EMAIL.trim().toLowerCase())||!same(password,env.ADMIN_PASSWORD))return json({error:'Email o password non corretti'},401);
   return json({user:admin()},200,{'set-cookie':setCookie(await issue(env),8*3600)});
+ }
+ if(path.startsWith('/api/v1/')){
+  if(!await isAuthenticated(request,env))return json({error:'Accesso richiesto'},401);
+  if(request.method!=='GET'&&request.headers.get('origin')!==url.origin)return json({error:'Origine non consentita'},403);
+  return phase1({request,env},path);
  }
  if(path==='/api/me'&&request.method==='GET')return await isAuthenticated(request,env)?json({user:admin()}):json({error:'Accesso richiesto'},401);
  if(path==='/api/logout'&&request.method==='POST'){
