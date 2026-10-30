@@ -46,13 +46,32 @@ function renderAgenda(){
  $('#cancelled').onchange=e=>{$('#apt-list').innerHTML=aptTable(e.target.checked?state.appointments.filter(a=>days.includes(a.start_at.slice(0,10))&&(!selectedSpecialist||a.specialist_id===selectedSpecialist)).sort((a,b)=>a.start_at.localeCompare(b.start_at)):list)};
  $$('[data-newday]').forEach(b=>b.onclick=()=>openApt(b.dataset.newday,b.dataset.newtime||'09:00'));
 }
+const weekdayNames=['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato'];
+function specialistAvailability(sid,day){
+ const sp=spec(sid),slots=state.schedules.filter(s=>s.specialist_id===sid).sort((a,b)=>a.weekday-b.weekday||a.start_time.localeCompare(b.start_time));
+ const rows=slots.map(s=>{const period=s.valid_from||s.valid_until?` <small>(dal ${esc(s.valid_from?dateIT(s.valid_from):'inizio')} al ${esc(s.valid_until?dateIT(s.valid_until):'senza scadenza')})</small>`:'';return `<li><b>${weekdayNames[s.weekday]}</b>: ${esc(s.start_time)}–${esc(s.end_time)}${period}</li>`}).join('');
+ const todaySlots=slots.filter(s=>s.weekday===new Date(day+'T12:00:00').getDay()&&(!s.valid_from||s.valid_from<=day)&&(!s.valid_until||s.valid_until>=day));
+ const dayText=todaySlots.length?todaySlots.map(s=>`${s.start_time}–${s.end_time}`).join(', '):'Nessun turno previsto';
+ return `<strong>Lo specialista ${esc(sp?.name||'selezionato')} non è disponibile nell’orario richiesto.</strong><p>Disponibilità per ${esc(dateIT(day))}: <b>${esc(dayText)}</b>.</p><p class="availability-title">Giorni e orari dello specialista:</p>${rows?`<ul class="availability-list">${rows}</ul>`:'<p>Nessun orario di lavoro configurato.</p>'}`;
+}
+function showAptWarning(sid,day,reason){const box=$('#apt-warning');if(!box)return;const isSchedule=reason==='Fuori dagli orari di disponibilità'||reason==='Specialista non disponibile';box.innerHTML=isSchedule?specialistAvailability(sid,day):`<strong>${esc(reason||'Impossibile creare l’appuntamento.')}</strong>`;box.hidden=false;box.scrollIntoView({block:'nearest',behavior:'smooth'});}
 function openApt(day=today(),time="09:00"){
  if(!state.patients.length||!state.specialists.some(s=>s.active)){toast('Crea prima un paziente e uno specialista');return}
  const active=state.specialists.filter(s=>s.active),first=active[0];const fields=select('Paziente','patient_id',state.patients.map(p=>[p.id,fullname(p)]),'',true)+select('Specialista','specialist_id',active.map(s=>[s.id,s.name]),selectedSpecialist||first.id,true)+`<label>Prestazione<select name="service_id" id="apt-service"></select></label>`+field('Data','date',day,'date',true)+field('Ora','time',time,'time',true)+field('Durata (minuti)','duration','30','number',true,'min="5" max="480"')+field('Prezzo €','price','0','number',true,'min="0" step="0.01"')+select('Ripetizioni','repeat',[[1,'Nessuna'],[2,'2 appuntamenti'],[4,'4 appuntamenti'],[6,'6 appuntamenti'],[8,'8 appuntamenti'],[10,'10 appuntamenti'],[12,'12 appuntamenti']])+select('Frequenza','every_days',[[7,'Ogni settimana'],[1,'Ogni giorno'],[14,'Ogni 2 settimane'],[28,'Ogni 4 settimane']])+area('Note amministrative','notes');
- modal('Nuovo appuntamento',form(fields,'Crea appuntamento'),()=>{
+ modal('Nuovo appuntamento',form(fields,'Crea appuntamento').replace('<div class="form-actions">','<div id="apt-warning" class="availability-warning" role="alert" hidden></div><div class="form-actions">'),()=>{
   const update=()=>{const sid=$('[name=specialist_id]').value,services=state.services.filter(s=>s.specialist_id===sid&&s.active);$('#apt-service').innerHTML='<option value="">Visita generica</option>'+opt(services)};
   $('[name=specialist_id]').onchange=update;update();$('#apt-service').onchange=e=>{const s=service(e.target.value);if(s){$('[name=duration]').value=s.duration;$('[name=price]').value=(s.price_cents/100).toFixed(2)}};
-  bindForm(async b=>{const result=await api('v1/appointments','POST',{...b,start_at:stamp(b.date,b.time),repeat:Number(b.repeat),every_days:Number(b.every_days),duration:Number(b.duration),price:Number(b.price)});if(result.conflicts.length)alert(`${result.created.length} creati; ${result.conflicts.length} non creati:\n`+result.conflicts.map(x=>x.start_at+' · '+x.reason).join('\n'));});
+  $('#entry').onsubmit=async e=>{
+   e.preventDefault();const btn=e.submitter,b=Object.fromEntries(new FormData(e.currentTarget));btn.disabled=true;
+   const warning=$('#apt-warning');warning.hidden=true;
+   try{
+    const response=await fetch('/api/v1/appointments',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({...b,start_at:stamp(b.date,b.time),repeat:Number(b.repeat),every_days:Number(b.every_days),duration:Number(b.duration),price:Number(b.price)})});
+    const result=await response.json();
+    if(result.conflicts?.length){const first=result.conflicts[0];showAptWarning(b.specialist_id,first.start_at.slice(0,10),first.reason);if(result.created?.length){toast(`${result.created.length} appuntamenti creati; ${result.conflicts.length} non creati.`);await refresh()}return}
+    if(!response.ok)throw Error(result.error||`Richiesta fallita (HTTP ${response.status})`);
+    close();await refresh();toast('Appuntamento creato');
+   }catch(err){toast(err.message)}finally{btn.disabled=false}
+  };
  });
 }
 function openAppointment(id){const a=state.appointments.find(x=>x.id===id);if(!a)return;modal('Dettaglio appuntamento',`<div class="list"><div class="list-item">Paziente <b>${esc(fullname(pat(a.patient_id)))}</b></div><div class="list-item">Specialista <b>${esc(spec(a.specialist_id)?.name)}</b></div><div class="list-item">Data <b>${dateIT(a.start_at)} · ${esc(a.start_at.slice(11))}–${esc(a.end_at.slice(11))}</b></div><div class="list-item">Stato <b>${esc(a.status)}</b></div><div class="list-item">Prezzo <b>${euro(a.price_cents)}</b></div></div><div class="form"><label>Stato<select id="apt-status">${['prenotato','confermato','arrivato','in_visita','concluso','assente'].map(s=>`<option ${a.status===s?'selected':''}>${s}</option>`).join('')}</select></label><button class="primary" id="save-status">Aggiorna stato</button><hr><label>Motivo annullamento (facoltativo)<input id="cancel-reason"></label><button class="danger" id="cancel-apt">Annulla appuntamento</button></div>`,()=>{
