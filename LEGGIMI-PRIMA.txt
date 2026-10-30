@@ -1,0 +1,26 @@
+STUDIO MANAGER - PATCH 04 - LOGIN EMAIL E PASSWORD (SOLO DEMO)
+
+GITHUB: sostituire SOLTANTO questi due file, mantenendo i percorsi:
+- functions/[[path]].js
+- public/index.html
+
+NON CARICARE SU GITHUB:
+- AGGIORNA-PASSWORD-PRIVATO.html
+
+IMPORTANTISSIMO: l'account creato in precedenza ha hash PBKDF2 310000 iterazioni.
+Il login aggiornato usa PBKDF2 100000, limite supportato da Cloudflare.
+Senza aggiornare la password, il login rispondera' 401.
+
+PASSAGGI:
+1. Aprire AGGIORNA-PASSWORD-PRIVATO.html SOLO sul proprio computer con Chrome/Edge.
+2. Inserire email esatta dell'admin esistente e una password di almeno 16 caratteri.
+3. Generare il comando SQL, copiarlo e incollarlo nella Console D1 di studio-manager-db.
+4. Eseguire SQL. Verificare che la query abbia aggiornato 1 riga; se 0, controllare email.
+5. Pubblicare i due file su GitHub e attendere deploy Cloudflare.
+6. Accedere con email e password. Non serve piu' Google Authenticator.
+7. Eliminare BOOTSTRAP_TOKEN da Cloudflare Secrets, se presente.
+
+Non inviare password, SQL o token in chat. Non caricare il file HTML privato nel repository.
+Non e' stata aggiunta gestione utenti: rimane da implementare in sicurezza.
+La demo non salva dati clinici su D1; le autorizzazioni demo sono frontend.
+NON USARE DATI SANITARI REALI.
