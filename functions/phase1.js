@@ -16,6 +16,7 @@ async function one(db,sql,...args){return db.prepare(sql).bind(...args).first()}
 async function body(req){if(Number(req.headers.get('content-length')||0)>100000)throw Error('Richiesta troppo grande');return req.json()}
 function requireFields(o,fields){for(const f of fields)if(!clean(o[f]))throw Error('Campo obbligatorio: '+f)}
 async function available(db,sid,start,end,exclude){
+ const specialist=await one(db,'SELECT active FROM sm_specialists WHERE id=?',sid);if(!specialist||!specialist.active)return 'Specialista archiviato o non attivo';
  const conflicts=await one(db,`SELECT id FROM sm_appointments WHERE specialist_id=? AND status!='annullato' AND start_at<? AND end_at>? AND id!=? LIMIT 1`,sid,end,start,exclude||'');
  if(conflicts)return 'Orario già occupato';
  const blocks=await one(db,'SELECT id FROM sm_blocks WHERE specialist_id=? AND start_at<? AND end_at>? LIMIT 1',sid,end,start);
@@ -68,6 +69,18 @@ export async function phase1({request,env},path){
  if(method==='POST'&&path==='/api/v1/disciplines'){
   const b=await body(request);requireFields(b,['name']);const id=uid();await db.prepare('INSERT INTO sm_disciplines(id,name) VALUES(?,?)').bind(id,clean(b.name)).run();await audit(db,'create','discipline',id);return reply({id},201);
  }
+ if(method==='PATCH'&&path.startsWith('/api/v1/disciplines/')){
+  const id=path.split('/').pop(),b=await body(request),d=await one(db,'SELECT * FROM sm_disciplines WHERE id=?',id);if(!d)return fail('Disciplina non trovata',404);
+  const name=clean(b.name);if(!name)return fail('Nome obbligatorio');await db.prepare('UPDATE sm_disciplines SET name=? WHERE id=?').bind(name,id).run();await audit(db,'update','discipline',id);return reply({ok:true});
+ }
+ if(method==='DELETE'&&path.startsWith('/api/v1/disciplines/')){
+  const id=path.split('/').pop();if(await one(db,'SELECT id FROM sm_specialists WHERE discipline_id=? LIMIT 1',id))return fail('Disciplina assegnata: riassegna prima gli specialisti',409);
+  await db.prepare('DELETE FROM sm_disciplines WHERE id=?').bind(id).run();await audit(db,'delete','discipline',id);return reply({ok:true});
+ }
+ if(method==='POST'&&path==='/api/v1/disciplines/seed'){
+  const names=['Podologia','Fisioterapia','Ortopedia','Dermatologia','Cardiologia','Neurologia','Psicologia','Psicoterapia','Nutrizione','Dietistica','Osteopatia','Logopedia','Ginecologia','Urologia','Endocrinologia','Medicina generale','Medicina dello sport','Infermieristica'];
+  let created=0;for(const name of names){const r=await db.prepare('INSERT OR IGNORE INTO sm_disciplines(id,name) VALUES(?,?)').bind(uid(),name).run();created+=r.meta?.changes||0}await audit(db,'seed','discipline','',String(created));return reply({created});
+ }
  if(method==='POST'&&path==='/api/v1/specialists'){
   const b=await body(request);requireFields(b,['name']);if(b.email&& !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email))return fail('Email specialista non valida');const id=uid();await db.prepare('INSERT INTO sm_specialists(id,name,discipline_id,email,phone) VALUES(?,?,?,?,?)').bind(id,clean(b.name),b.discipline_id||null,clean(b.email),clean(b.phone)).run();await audit(db,'create','specialist',id);return reply({id},201);
  }
@@ -75,10 +88,29 @@ export async function phase1({request,env},path){
   const id=path.split('/').pop(),b=await body(request);const s=await one(db,'SELECT * FROM sm_specialists WHERE id=?',id);if(!s)return fail('Specialista non trovato',404);
   await db.prepare('UPDATE sm_specialists SET name=?,discipline_id=?,email=?,phone=?,active=? WHERE id=?').bind(clean(b.name??s.name),b.discipline_id??s.discipline_id,clean(b.email??s.email),clean(b.phone??s.phone),b.active===undefined?s.active:Number(!!b.active),id).run();await audit(db,'update','specialist',id);return reply({ok:true});
  }
+ if(method==='POST'&&path.startsWith('/api/v1/specialists/')&&path.endsWith('/archive')){
+  const id=path.split('/')[4],sp=await one(db,'SELECT * FROM sm_specialists WHERE id=?',id);if(!sp)return fail('Specialista non trovato',404);
+  await db.prepare('UPDATE sm_specialists SET active=0 WHERE id=?').bind(id).run();await audit(db,'archive','specialist',id);return reply({ok:true});
+ }
+ if(method==='POST'&&path.startsWith('/api/v1/specialists/')&&path.endsWith('/restore')){
+  const id=path.split('/')[4],sp=await one(db,'SELECT * FROM sm_specialists WHERE id=?',id);if(!sp)return fail('Specialista non trovato',404);
+  await db.prepare('UPDATE sm_specialists SET active=1 WHERE id=?').bind(id).run();await audit(db,'restore','specialist',id);return reply({ok:true});
+ }
  if(method==='POST'&&path==='/api/v1/services'){
   const b=await body(request);requireFields(b,['name','specialist_id']);const duration=Number(b.duration),price=cents(b.price??0);
   if(!Number.isInteger(duration)||duration<5||duration>480||!Number.isSafeInteger(price)||price<0)return fail('Durata o prezzo non validi');
   const id=uid();await db.prepare('INSERT INTO sm_services(id,name,specialist_id,duration,price_cents) VALUES(?,?,?,?,?)').bind(id,clean(b.name),b.specialist_id,duration,price).run();await audit(db,'create','service',id);return reply({id},201);
+ }
+ if(method==='PATCH'&&path.startsWith('/api/v1/services/')){
+  const id=path.split('/').pop(),b=await body(request),v=await one(db,'SELECT * FROM sm_services WHERE id=?',id);if(!v)return fail('Prestazione non trovata',404);
+  const duration=Number(b.duration??v.duration),price=b.price===undefined?v.price_cents:cents(b.price);
+  if(!clean(b.name??v.name)||!Number.isInteger(duration)||duration<5||duration>480||!Number.isSafeInteger(price)||price<0)return fail('Dati prestazione non validi');
+  await db.prepare('UPDATE sm_services SET name=?,duration=?,price_cents=?,active=? WHERE id=?').bind(clean(b.name??v.name),duration,price,b.active===undefined?v.active:Number(!!b.active),id).run();await audit(db,'update','service',id);return reply({ok:true});
+ }
+ if(method==='DELETE'&&path.startsWith('/api/v1/services/')){
+  const id=path.split('/').pop();if(await one(db,'SELECT id FROM sm_appointments WHERE service_id=? LIMIT 1',id)){
+   await db.prepare('UPDATE sm_services SET active=0 WHERE id=?').bind(id).run();await audit(db,'deactivate','service',id);return reply({ok:true,archived:true});
+  }await db.prepare('DELETE FROM sm_services WHERE id=?').bind(id).run();await audit(db,'delete','service',id);return reply({ok:true});
  }
  if(method==='POST'&&path==='/api/v1/patients'){
   const b=await body(request);requireFields(b,['first_name','last_name']);const id=uid();
@@ -109,6 +141,25 @@ export async function phase1({request,env},path){
   }
   await db.prepare('DELETE FROM sm_schedules WHERE id=?').bind(id).run();await audit(db,'delete','schedule',id);return reply({ok:true});
  }
+ if(method==='PUT'&&path.startsWith('/api/v1/specialists/')&&path.endsWith('/weekly-schedule')){
+  const sid=path.split('/')[4],b=await body(request),sp=await one(db,'SELECT id,active FROM sm_specialists WHERE id=?',sid);if(!sp)return fail('Specialista non trovato',404);
+  if(!Array.isArray(b.slots)||b.slots.length>35)return fail('Massimo 35 fasce settimanali');
+  const slots=b.slots.map(x=>({weekday:Number(x.weekday),start_time:clean(x.start_time),end_time:clean(x.end_time)}));
+  for(const x of slots)if(!Number.isInteger(x.weekday)||x.weekday<0||x.weekday>6||!okTime(x.start_time)||!okTime(x.end_time)||x.start_time>=x.end_time)return fail('Orario non valido');
+  for(let day=0;day<7;day++){const daySlots=slots.filter(x=>x.weekday===day).sort((a,b)=>a.start_time.localeCompare(b.start_time));for(let i=1;i<daySlots.length;i++)if(daySlots[i].start_time<daySlots[i-1].end_time)return fail('Le fasce dello stesso giorno non possono sovrapporsi',409)}
+  const existing=await all(db,'SELECT * FROM sm_schedules WHERE specialist_id=?',sid);
+  if(existing.some(x=>x.valid_from||x.valid_until))return fail('Esistono fasce con validità limitata: gestiscile singolarmente prima di sostituire la settimana',409);
+  const upcoming=await all(db,"SELECT start_at,end_at FROM sm_appointments WHERE specialist_id=? AND status!='annullato' AND start_at>=?",sid,new Date().toISOString().slice(0,16));
+  for(const a of upcoming){const day=weekday(a.start_at),covered=slots.some(x=>x.weekday===day&&a.start_at.slice(0,10)===a.end_at.slice(0,10)&&a.start_at.slice(11)>=x.start_time&&a.end_at.slice(11)<=x.end_time);if(!covered)return fail('Orari incompatibili con appuntamento del '+a.start_at.replace('T',' alle ')+'. Riprogrammalo prima.',409)}
+  const commands=[db.prepare('DELETE FROM sm_schedules WHERE specialist_id=?').bind(sid),...slots.map(x=>db.prepare('INSERT INTO sm_schedules(id,specialist_id,weekday,start_time,end_time) VALUES(?,?,?,?,?)').bind(uid(),sid,x.weekday,x.start_time,x.end_time))];await db.batch(commands);await audit(db,'replace_week','schedule',sid,String(slots.length));return reply({ok:true,count:slots.length});
+ }
+ if(method==='PATCH'&&path.startsWith('/api/v1/blocks/')){
+  const id=path.split('/').pop(),b=await body(request),old=await one(db,'SELECT * FROM sm_blocks WHERE id=?',id);if(!old)return fail('Assenza non trovata',404);
+  const start=b.start_at||old.start_at,end=b.end_at||old.end_at;if(!okStamp(start)||!okStamp(end)||start>=end)return fail('Periodo non valido');
+  if(await one(db,"SELECT id FROM sm_appointments WHERE specialist_id=? AND status!='annullato' AND start_at<? AND end_at>? LIMIT 1",old.specialist_id,end,start))return fail('Prima riprogramma gli appuntamenti coinvolti',409);
+  await db.prepare('UPDATE sm_blocks SET start_at=?,end_at=?,reason=? WHERE id=?').bind(start,end,clean(b.reason??old.reason),id).run();await audit(db,'update','block',id);return reply({ok:true});
+ }
+ if(method==='DELETE'&&path.startsWith('/api/v1/blocks/')){const id=path.split('/').pop();await db.prepare('DELETE FROM sm_blocks WHERE id=?').bind(id).run();await audit(db,'delete','block',id);return reply({ok:true});}
  if(method==='POST'&&path==='/api/v1/blocks'){
   const b=await body(request);requireFields(b,['specialist_id','start_at','end_at']);if(!okStamp(b.start_at)||!okStamp(b.end_at)||b.start_at>=b.end_at)return fail('Periodo non valido');
   const overlap=await one(db,"SELECT id FROM sm_appointments WHERE specialist_id=? AND status!='annullato' AND start_at<? AND end_at>? LIMIT 1",b.specialist_id,b.end_at,b.start_at);if(overlap)return fail('Prima riprogramma gli appuntamenti coinvolti',409);
