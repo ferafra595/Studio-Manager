@@ -10,6 +10,27 @@ const one=(db,sql,...args)=>db.prepare(sql).bind(...args).first();
 export async function sistemaTS({request,env},path){
  const db=env.DB;if(!db)return err('Database non configurato',503);
  try{
+  // Verifica SOLO raggiungibilità del servizio di TEST. Non trasmette credenziali o dati.
+  if(request.method==='GET'&&path==='/api/v1/ts/test-connection'){
+   const endpoint='https://invioSS730pTest.sanita.finanze.it/DocumentoSpesa730pWeb/DocumentoSpesa730pPort';
+   try {
+    const response=await fetch(endpoint+'?wsdl',{
+     method:'GET',redirect:'manual',signal:AbortSignal.timeout(10000),
+     headers:{'accept':'text/xml, application/xml'}
+    });
+    const contentType=response.headers.get('content-type')||'';
+    // Non leggere né riportare il corpo della risposta: può contenere dettagli del server.
+    return json({environment:'TEST',endpoint,transport_reachable:true,http_status:response.status,
+      content_type:contentType.slice(0,100),wsdl_available:response.ok&&/xml/i.test(contentType),
+      authenticated:false,transmission_tested:false,
+      notice:'Diagnostica di rete soltanto. Nessuna credenziale o fattura è stata inviata.'});
+   }catch(e){
+    return json({environment:'TEST',endpoint,transport_reachable:false,
+      reason:e?.name==='TimeoutError'?'timeout':'connessione_non_riuscita',
+      authenticated:false,transmission_tested:false,
+      notice:'Nessuna credenziale o fattura è stata inviata.'},200);
+   }
+  }
   if(request.method==='GET'&&path==='/api/v1/ts/status'){
    const tables=await all(db,"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sm_ts_documents','sm_ts_events')");
    return json({schema_ready:tables.length===2,mode:'preparazione',live_transmission_enabled:false,credentials_configured:!!(env.TS_USERNAME&&env.TS_PASSWORD&&env.TS_PINCODE),notice:'La presenza delle credenziali non abilita l’invio: verificare WSDL, autorizzazioni e certificati ufficiali.'});
