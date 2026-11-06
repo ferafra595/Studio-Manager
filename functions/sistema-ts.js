@@ -20,8 +20,10 @@ export async function sistemaTS({request,env},path){
     });
     const contentType=response.headers.get('content-type')||'';
     // Non leggere né riportare il corpo della risposta: può contenere dettagli del server.
-    return json({environment:'TEST',endpoint,transport_reachable:true,http_status:response.status,
+    return json({environment:'TEST',endpoint,transport_reachable:response.status!==526,tls_verified:response.status!==526,http_status:response.status,
       content_type:contentType.slice(0,100),wsdl_available:response.ok&&/xml/i.test(contentType),
+      diagnosis:response.status===526?'TLS_CERTIFICATE_VALIDATION_FAILED':response.ok?'HTTP_OK':'HTTP_ERROR',
+      next_step:response.status===526?'Verificare catena di fiducia TLS con il gestore del servizio TS; Cloudflare Workers non consente di disabilitare la verifica TLS o impostare una CA personalizzata per fetch. Non inviare credenziali.':null,
       authenticated:false,transmission_tested:false,
       notice:'Diagnostica di rete soltanto. Nessuna credenziale o fattura è stata inviata.'});
    }catch(e){
