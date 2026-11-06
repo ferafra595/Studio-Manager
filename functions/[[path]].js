@@ -1,3 +1,4 @@
+import { sistemaTS } from './sistema-ts.js';
 import {phase1} from './phase1.js';
 // Studio Manager - Cloudflare Pages Functions. ACCESSO DEMO SOLO ADMIN.
 // Le credenziali risiedono esclusivamente in Cloudflare Secrets: ADMIN_EMAIL e ADMIN_PASSWORD.
@@ -28,6 +29,7 @@ export async function onRequest({request,env}){
  if(path.startsWith('/api/v1/')){
   if(!await isAuthenticated(request,env))return json({error:'Accesso richiesto'},401);
   if(request.method!=='GET'&&request.headers.get('origin')!==url.origin)return json({error:'Origine non consentita'},403);
+  if(path.startsWith('/api/v1/ts/'))return sistemaTS({request,env},path);
   return phase1({request,env},path);
  }
  if(path==='/api/me'&&request.method==='GET')return await isAuthenticated(request,env)?json({user:admin()}):json({error:'Accesso richiesto'},401);
