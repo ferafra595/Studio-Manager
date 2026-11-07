@@ -1,0 +1,33 @@
+STUDIO MANAGER — FASE 3: TRASPORTO SOAP TEST (NON ATTIVO)
+
+COSA CARICARE
+Carica ts_transport.py e test_ts_transport.py nella STESSA cartella di ts_soap.py.
+Non sostituire app.py, requirements.txt, o altri file. Lo ZIP include anche
+una copia di ts_soap.py e dello XSD soltanto per poter eseguire test isolati.
+Se li hai già caricati nella fase 2, non è necessario sostituirli.
+
+TEST
+python -m unittest -v test_ts_transport
+
+COSA FA
+- Costruisce una richiesta HTTP SOAP 1.1 con Basic Authentication in memoria.
+- Impone endpoint TEST ufficiale e SOAPAction consentite.
+- Prepara TLS verificato e supporta CA ufficiale aggiuntiva in PEM/base64.
+- Interpreta le risposte SOAP tramite ts_soap.py.
+- Blocca per impostazione predefinita qualunque invio; non aggiunge endpoint pubblici.
+
+COSA NON FA
+- Non esegue cifratura PINCODE/codice fiscale.
+- Non è collegato alle fatture Cloudflare D1.
+- Non memorizza ricevute, né implementa variazioni di stato.
+- Non è stato provato contro i server TS; TLS non risolto.
+- NON abilita produzione.
+
+IMPORTANTE
+Non attivare TS_ENABLE_TEST_TRANSMISSION, non passare credenziali reali e non
+utilizzare dati paziente su Render Free. I due flag di autorizzazione nel codice
+sono salvaguardie, NON certificazioni di sicurezza o conformità.
+Il kit TS 20240214 dichiara che ?wsdl NON è disponibile sull'endpoint remoto:
+non usarlo come prova di indisponibilità del servizio.
+Prima di qualunque invio: aggiornare le specifiche al 2026, completare cifratura,
+verificare CA Sogei, autorizzazioni, protezione dati e collaudo ufficiale.
