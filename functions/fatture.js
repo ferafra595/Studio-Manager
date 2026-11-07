@@ -32,9 +32,50 @@ function checkIssuer(b){const x={};for(const k of ['legal_name','vat_number','ta
  if(x.sdi_code&&!/^[A-Z0-9]{7}$/i.test(x.sdi_code))throw Error('Codice destinatario: sono richiesti sette caratteri alfanumerici');
  x.province=x.province.toUpperCase();x.tax_regime=x.tax_regime.toUpperCase();x.sdi_code=x.sdi_code.toUpperCase();x.tax_code=x.tax_code.toUpperCase();return x;
 }
+
+// Fase 9: righe multiple in bozza. Importi sempre in centesimi; il server ricalcola i totali.
+function checkLines(raw){
+ if(!Array.isArray(raw)||raw.length<1||raw.length>30)throw Error('Inserisci da 1 a 30 prestazioni');
+ return raw.map((x,i)=>{
+  const description=s(x.description),quantity=Number(x.quantity),unit=Number(x.unit_cents),rate=Number(x.vat_rate_bp),nature=s(x.vat_nature).toUpperCase();
+  if(!description||description.length>400||!Number.isSafeInteger(quantity)||quantity<1||quantity>10000||!money(unit)||!Number.isSafeInteger(rate)||rate<0||rate>10000||!/^([A-Z][0-9](?:\.[0-9]+)?)?$/.test(nature)||nature.length>10)throw Error('Prestazione '+(i+1)+' non valida');
+  if(rate>0&&nature)throw Error('Non indicare una natura di esenzione con IVA diversa da zero');
+  if(rate===0&&!nature)throw Error('Indica la natura IVA della prestazione senza IVA (da verificare fiscalmente)');
+  const taxable=quantity*unit,vat=Math.round(taxable*rate/10000);
+  if(!Number.isSafeInteger(taxable+vat)||taxable+vat>100000000)throw Error('Importo prestazione troppo elevato');
+  return {description,quantity,unit,rate,nature,taxable,vat};
+ });
+}
+async function invoiceLinesApi(db,request,path){
+ const method=request.method;
+ const match=path.match(/^\/api\/v1\/billing\/invoices\/([^/]+)\/lines$/);
+ if(!match)return null;
+ const invoiceId=match[1];
+ const inv=await one(db,'SELECT * FROM sm_invoices WHERE id=?',invoiceId);
+ if(!inv)return fail('Documento inesistente',404);
+ if(method==='GET'){
+  const lines=await all(db,'SELECT position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents FROM sm_invoice_lines WHERE invoice_id=? ORDER BY position',invoiceId);
+  return respond({items:lines.length?lines:[{position:1,description:inv.description,quantity:inv.quantity,unit_cents:inv.unit_cents,vat_rate_bp:inv.vat_rate_bp,vat_nature:inv.vat_nature,taxable_cents:inv.taxable_cents,vat_cents:inv.vat_cents}]});
+ }
+ if(method!=='PUT')return fail('Metodo non consentito',405);
+ if(inv.status!=='bozza'||inv.kind!=='fattura')return fail('Solo le bozze di fattura possono essere modificate',409);
+ const payload=await body(request),lines=checkLines(payload.lines),stamp=Number(payload.stamp_cents);
+ if(![0,200].includes(stamp))return fail('Bollo non valido');
+ const taxable=lines.reduce((a,l)=>a+l.taxable,0),vat=lines.reduce((a,l)=>a+l.vat,0),total=taxable+vat+stamp;
+ if(!Number.isSafeInteger(total)||total<=0||total>100000000)return fail('Totale non valido');
+ const statements=[db.prepare('DELETE FROM sm_invoice_lines WHERE invoice_id=?').bind(invoiceId)];
+ lines.forEach((l,i)=>statements.push(db.prepare('INSERT INTO sm_invoice_lines(id,invoice_id,position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(id(),invoiceId,i+1,l.description,l.quantity,l.unit,l.rate,l.nature,l.taxable,l.vat)));
+ statements.push(db.prepare(`UPDATE sm_invoices SET description=?,quantity=?,unit_cents=?,vat_rate_bp=?,vat_nature=?,stamp_cents=?,taxable_cents=?,vat_cents=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='bozza'`).bind(lines[0].description,lines[0].quantity,lines[0].unit,lines[0].rate,lines[0].nature,stamp,taxable,vat,total,invoiceId));
+ // D1 batch esegue in transazione: righe e totale restano coerenti.
+ await db.batch(statements);
+ await event(db,invoiceId,'righe_aggiornate',`${lines.length} prestazioni`);
+ return respond({ok:true,total_cents:total});
+}
+
 export async function fatture({request,env},path){const db=env.DB;if(!db)return fail('Binding D1 non configurato',503);
  const method=request.method;
  try{
+ if(/^\/api\/v1\/billing\/invoices\/[^/]+\/lines$/.test(path))return await invoiceLinesApi(db,request,path);
  if(method==='GET'&&path==='/api/v1/billing/status'){
   const names=await all(db,"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sm_invoices','sm_invoice_payments','sm_billing_settings')");return respond({ready:names.length===3,live_fiscal_transmission:false});
  }
@@ -49,7 +90,7 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
  }
  if(method==='GET'&&/^\/api\/v1\/billing\/invoices\/[^/]+$/.test(path)){
   const invoice=await one(db,'SELECT * FROM sm_invoices WHERE id=?',path.split('/').pop());if(!invoice)return fail('Documento non trovato',404);
-  return respond({invoice,payments:await all(db,'SELECT * FROM sm_invoice_payments WHERE invoice_id=? ORDER BY paid_on,created_at',invoice.id),events:await all(db,'SELECT action,detail,created_at FROM sm_invoice_events WHERE invoice_id=? ORDER BY created_at DESC',invoice.id)});
+  return respond({invoice,lines:await all(db,'SELECT position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents FROM sm_invoice_lines WHERE invoice_id=? ORDER BY position',invoice.id),payments:await all(db,'SELECT * FROM sm_invoice_payments WHERE invoice_id=? ORDER BY paid_on,created_at',invoice.id),events:await all(db,'SELECT action,detail,created_at FROM sm_invoice_events WHERE invoice_id=? ORDER BY created_at DESC',invoice.id)});
  }
  if(method==='POST'&&path==='/api/v1/billing/invoices'){
   const b=await body(request),pid=s(b.patient_id),aid=s(b.appointment_id)||null,date=s(b.issue_date),desc=s(b.description),series=s(b.series||'A').toUpperCase(),nature=s(b.vat_nature).toUpperCase();
@@ -84,5 +125,5 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   await event(db,invoiceId,'pagamento_registrato',`${amount} centesimi; ${method}`);return respond({id:paymentId},201);
  }
  return fail('Endpoint fatturazione inesistente',404);
- }catch(e){const msg=String(e?.message||e);if(/no such table/i.test(msg))return fail('Eseguire la migrazione 0005_fatturazione.sql',503);if(/UNIQUE constraint failed/i.test(msg))return fail('Documento o progressivo già presente. Aggiorna e riprova.',409);if(/FOREIGN KEY constraint failed/i.test(msg))return fail('Elemento collegato non valido',409);if(/Richiesta troppo grande|non validi|Totale non valido|Partita IVA|Codice fiscale|CAP:|Provincia:|regime fiscale|PEC|destinatario|Compila denominazione|lunghezza massima/.test(msg))return fail(msg,400);return fail('Operazione di fatturazione non riuscita',500)}
+ }catch(e){const msg=String(e?.message||e);if(/no such table: sm_invoice_lines/i.test(msg))return fail('Eseguire la migrazione 0006_righe_fattura.sql',503);if(/no such table/i.test(msg))return fail('Eseguire la migrazione 0005_fatturazione.sql',503);if(/UNIQUE constraint failed/i.test(msg))return fail('Documento o progressivo già presente. Aggiorna e riprova.',409);if(/FOREIGN KEY constraint failed/i.test(msg))return fail('Elemento collegato non valido',409);if(/Richiesta troppo grande|prestazioni|Prestazione|natura IVA|Bollo non valido|Importo prestazione|non validi|Totale non valido|Partita IVA|Codice fiscale|CAP:|Provincia:|regime fiscale|PEC|destinatario|Compila denominazione|lunghezza massima/.test(msg))return fail(msg,400);return fail('Operazione di fatturazione non riuscita',500)}
 }
