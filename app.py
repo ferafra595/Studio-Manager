@@ -8,6 +8,7 @@ import ssl
 import subprocess
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = 'invioSS730pTest.sanita.finanze.it'
@@ -61,7 +62,7 @@ def peer_diagnostics():
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # This endpoint handles ONLY a local synthetic fixture; caller sends no PII.
-        if self.path != '/ts/test-dry-run':
+        if urlsplit(self.path).path != '/ts/test-dry-run':
             return self.send_json(404, {'error': 'not found'})
         token = os.getenv('TS_BRIDGE_TOKEN', '')
         supplied = self.headers.get('Authorization', '')
@@ -82,9 +83,10 @@ class Handler(BaseHTTPRequestHandler):
                                         'reason_type': type(exc).__name__})
 
     def do_GET(self):
-        if self.path not in ('/', '/health', '/probe'):
+        path = urlsplit(self.path).path
+        if path not in ('/', '/health', '/probe'):
             return self.send_json(404, {'error': 'not found'})
-        if self.path in ('/', '/health'):
+        if path in ('/', '/health'):
             return self.send_json(200, {'status': 'ready', 'probe': 'GET /probe', 'no_credentials': True})
         result = {'environment': 'TEST', 'host': HOST, 'credentials_sent': False,
                   'documents_sent': False, 'tls_verification': True,
