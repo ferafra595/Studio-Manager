@@ -66,7 +66,7 @@ def preflight():
 
     today = date.today().isoformat()
     # Match the official 'Altri professionisti' demo identity, encrypted fields,
-    # expense type and amount. Use a new unique TEST document number/date so
+    # expense type, amount and VAT rate. Use a new unique TEST document number/date so
     # this request is not a replay of the published example invoice.
     doc = {
         'partita_iva': DEMO_PIVA, 'data_emissione': today,
@@ -74,7 +74,7 @@ def preflight():
         'data_pagamento': today, 'pagamento_tracciato': 'SI',
         'opposizione': False, 'cf_cittadino_cifrato': DEMO_CF_ENCRYPTED,
         'proprietario': {'cfProprietario': DEMO_OWNER_ENCRYPTED},
-        'voci_spesa': [{'tipo': 'SP', 'importo': '25.30'}],
+        'voci_spesa': [{'tipo': 'SP', 'importo': '25.30', 'aliquota_iva': '10.00'}],
     }
     xml, action = build(doc, 'inserimento', pincode_cifrato='ENC:' + _encrypt_test(pincode))
     root = etree.fromstring(xml, parser=etree.XMLParser(resolve_entities=False, no_network=True))

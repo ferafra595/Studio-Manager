@@ -46,6 +46,21 @@ def validate(d, operation='inserimento'):
                     amount=Decimal(str(entry['importo']))
                     if not amount.is_finite() or amount<=0 or amount.as_tuple().exponent < -2: raise InvalidOperation
                 except (InvalidOperation,KeyError,ValueError): problems.append(f'Voce {i}: importo non valido')
+                # Per il tracciato XSD i due campi sono alternativi; il servizio
+                # TEST richiede che uno sia effettivamente valorizzato.
+                vat = entry.get('aliquota_iva')
+                nature = entry.get('natura_iva')
+                if (vat is None) == (nature is None):
+                    problems.append(f'Voce {i}: indicare esattamente uno fra aliquota IVA e natura IVA')
+                if vat is not None:
+                    try:
+                        rate = Decimal(str(vat))
+                        if not rate.is_finite() or rate < 0 or rate > 100 or rate.as_tuple().exponent < -2:
+                            raise InvalidOperation
+                    except (InvalidOperation, ValueError, TypeError):
+                        problems.append(f'Voce {i}: aliquota IVA non valida')
+                if nature is not None and not (isinstance(nature, str) and 2 <= len(nature) <= 10):
+                    problems.append(f'Voce {i}: natura IVA non valida')
         if d.get('pagamento_tracciato') not in ('SI','NO'): problems.append('Pagamento tracciato: SI o NO')
     return problems
 
@@ -84,6 +99,10 @@ def build(d, operation='inserimento', *, pincode_cifrato):
             item=child(target,'voceSpesa')
             child(item,'tipoSpesa',entry['tipo'])
             child(item,'importo',f"{Decimal(str(entry['importo'])):.2f}")
+            if entry.get('aliquota_iva') is not None:
+                child(item, 'aliquotaIVA', f"{Decimal(str(entry['aliquota_iva'])):.2f}")
+            elif entry.get('natura_iva') is not None:
+                child(item, 'naturaIVA', entry['natura_iva'])
         child(target,'pagamentoTracciato',d['pagamento_tracciato'])
         child(target,'tipoDocumento','F')
         child(target,'flagOpposizione','1' if d.get('opposizione') else '0')
