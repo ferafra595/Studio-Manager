@@ -1,3 +1,4 @@
+import { tsInvoicePreparation } from './ts-invoice-prep.js';
 // Sistema TS: gestione documenti e controlli preliminari. Nessuna trasmissione reale finché
 // non sono stati verificati WSDL, certificati, autorizzazione e test ufficiale.
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
@@ -10,6 +11,7 @@ const one=(db,sql,...args)=>db.prepare(sql).bind(...args).first();
 export async function sistemaTS({request,env},path){
  const db=env.DB;if(!db)return err('Database non configurato',503);
  try{
+  if(path.startsWith('/api/v1/ts/invoice-preparations'))return tsInvoicePreparation({request,env},path);
   // Verifica SOLO raggiungibilità del servizio di TEST. Non trasmette credenziali o dati.
   if(request.method==='GET'&&path==='/api/v1/ts/test-connection'){
    const endpoint='https://invioSS730pTest.sanita.finanze.it/DocumentoSpesa730pWeb/DocumentoSpesa730pPort';
