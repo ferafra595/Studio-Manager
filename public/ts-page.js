@@ -1,6 +1,7 @@
 // Interfaccia TS - solo bozze, nessun invio reale.
 async function renderSistemaTS(){
- const main=$('#main');main.innerHTML='<section class="card"><h2>Sistema Tessera Sanitaria · Preparazione</h2><p>Ambiente di sviluppo. Nessuna trasmissione a TS. Usare esclusivamente pazienti fittizi.</p><div id="ts-status">Verifica database...</div><div class="form-actions"><button class="primary" id="ts-new">Nuova bozza TS</button><button id="ts-reload">Aggiorna</button><button id="ts-dry-run">Collauda SOAP (dati fittizi)</button><button id="ts-official-test" title="Invio esterno solo di dati sintetici al servizio TEST">Invio ufficiale TEST (demo)</button></div></section><section class="card"><h2>Documenti TS</h2><div id="ts-documents">Caricamento...</div></section>';
+ const main=$('#main');main.innerHTML='<section class="card"><h2>Sistema Tessera Sanitaria · Preparazione</h2><p>Ambiente di sviluppo. Nessuna trasmissione a TS. Usare esclusivamente pazienti fittizi.</p><div id="ts-status">Verifica database...</div><div class="form-actions"><button class="primary" id="ts-new">Nuova bozza TS</button><button id="ts-reload">Aggiorna</button><button id="ts-dry-run">Collauda SOAP (dati fittizi)</button><button id="ts-official-test" title="Invio esterno solo di dati sintetici al servizio TEST">Invio ufficiale TEST (demo)</button></div></section><section class="card"><h2>Fatture emesse · Preparazione TS (nessun invio)</h2><div id="ts-invoice-preparations">Caricamento...</div></section><section class="card"><h2>Documenti TS</h2><div id="ts-documents">Caricamento...</div></section>';
+ tsInvoicePreparations();
  $('#ts-new').onclick=tsNew;$('#ts-reload').onclick=renderSistemaTS;
  $('#ts-official-test').onclick=async()=>{
   if(!window.confirm('Questo test invia davvero un documento SINTETICO al server TEST del Sistema TS, usando le credenziali demo del kit. Non saranno usate fatture o dati dei pazienti. Vuoi continuare?'))return;
@@ -21,7 +22,7 @@ async function renderSistemaTS(){
    const messageHtml=msgs.length?'<h3>Messaggi ufficiali TS</h3><ul>'+msgs.map(m=>
        `<li><b>${esc(String(m.tipo??''))} · ${esc(String(m.codice??''))}</b>: ${esc(String(m.descrizione??''))}</li>`).join('')+'</ul>':'<p>Nessun messaggio dettagliato presente nella risposta ricevuta.</p>';
    const faultHtml=result.soap_fault?`<p><b>SOAP Fault:</b> ${esc(String(result.code||''))} — ${esc(String(result.message||''))}</p>`:'';
-   const note='<p><b>Attenzione:</b> HTTP 200 non significa documento acquisito. Con esito 1 il documento è scartato. Non ripetere il test automaticamente.</p>';
+   const note=esito==='0'&&result.protocollo?'<p><b>Confermato:</b> documento dimostrativo accolto dal TEST con protocollo. Nessuna fattura reale inviata.</p>':esito==='1'?'<p><b>Attenzione:</b> documento scartato. Non ripetere automaticamente l’invio.</p>':'<p><b>Attenzione:</b> verificare esito e protocollo ufficiali prima di considerare il documento acquisito.</p>';
    modal('Risposta del servizio ufficiale TEST',`<p>${bits.map(s=>esc(s)).join('</p><p>')}</p>${faultHtml}${messageHtml}${note}<p>Solo dati dimostrativi. Nessuna fattura reale inviata.</p>`);
   }catch(e){toast(e.message)}finally{if(page==='sistema_ts')renderSistemaTS()}
  };
@@ -50,4 +51,33 @@ function tsNew(){const pts=state.patients||[];if(!pts.length){toast('Crea prima 
  const v=String(f.amount_eur||'');if(!/^\d+(?:\.\d{1,2})?$/.test(v))throw Error('Importo non valido');const [whole,dec='']=v.split('.');const cents=Number(whole)*100+Number(dec.padEnd(2,'0'));if(!Number.isSafeInteger(cents)||cents<=0)throw Error('Importo non valido');
  await api('v1/ts/documents','POST',{patient_id:f.patient_id,document_number:f.document_number,document_date:f.document_date,payment_date:f.payment_date,payment_method:f.payment_method,total_cents:cents,expense_type:f.expense_type,opposition:f.opposition==='1'});setTimeout(()=>{if(page==='sistema_ts')renderSistemaTS()},0)
  }))
+}
+
+async function tsInvoicePreparations(){
+ const target=$('#ts-invoice-preparations');if(!target)return;
+ try{
+  const response=await api('v1/ts/invoice-preparations');const items=response.items||[];
+  if(!items.length){target.innerHTML='<p>Non risultano fatture emesse.</p>';return}
+  target.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Fattura</th><th>Paziente</th><th>Totale</th><th>Pagamenti</th><th>Preparazione TS</th><th></th></tr></thead><tbody>${items.map(i=>{
+   const full=i.paid_cents===i.total_cents&&i.payment_count===1;
+   return `<tr><td>${esc(i.series+'/'+i.sequence+'/'+i.year)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)} (${i.payment_count})</td><td>${esc(i.ts_status||'Non preparata')}</td><td>${!i.preparation_id&&full?`<button data-ts-prepare="${esc(i.id)}">Prepara</button>`:'—'}</td></tr>`
+  }).join('')}</tbody></table></div><p class="notice">Nessun invio reale: classificazione manuale e verifica fiscale obbligatoria. Fatture con pagamenti parziali o multipli non ancora supportate.</p>`;
+  $$('[data-ts-prepare]').forEach(button=>button.onclick=()=>tsPrepareInvoice(button.dataset.tsPrepare));
+ }catch(e){target.textContent=e.message}
+}
+async function tsPrepareInvoice(invoiceId){
+ try{
+  const info=await api('v1/ts/invoice-preparations/'+encodeURIComponent(invoiceId));
+  const tsTypes=['','TK','FC','FV','AS','SR','CT','PI','IC','AA','AD','SV','SP'];
+  const fields=info.lines.map((line,i)=>select('Riga '+(i+1)+' — '+line.description+' ('+euro(line.taxable_cents+line.vat_cents)+')','type_'+i,tsTypes.map(t=>[t,t||'Seleziona codice TS']),'',true)).join('')+
+   select('Opposizione del paziente alla trasmissione','opposition',[['','Seleziona espressamente'],['si','Sì, opposizione registrata'],['no','No, opposizione non manifestata']],'',true)+
+   `<label><input type="checkbox" name="confirmed" value="1" required> Confermo di aver verificato fattura, pagamento, qualificazione sanitaria delle prestazioni e opposizione. La preparazione NON invia dati al TS.</label>`;
+  modal('Prepara fattura '+info.invoice.number+' per verifica TS',form(fields,'Salva preparazione'),()=>bindForm(async f=>{
+   if(!['si','no'].includes(f.opposition)||f.confirmed!=='1')throw Error('Conferma e opposizione obbligatorie');
+   const types=info.lines.map((line,i)=>({line_id:line.id,expense_type:f['type_'+i]}));
+   if(types.some(t=>!t.expense_type))throw Error('Seleziona un codice TS per ogni prestazione');
+   await api('v1/ts/invoice-preparations/'+encodeURIComponent(invoiceId),'POST',{opposition:f.opposition==='si',review_confirmed:true,types});
+   setTimeout(()=>{if(page==='sistema_ts')renderSistemaTS()},0);
+  }));
+ }catch(e){toast(e.message)}
 }
