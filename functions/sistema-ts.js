@@ -50,6 +50,25 @@ export async function sistemaTS({request,env},path){
     return json({ok:!!(b.xsd_valid&&b.soap_action_verified&&!b.transmitted),...b});
    }catch{return err('Render non raggiungibile o timeout',502)}
   }
+  // Explicit official TEST request with the public synthetic fixture only.
+  // Requires logged-in ADMIN (router), same-origin POST, shared bridge token,
+  // and an additional opt-in environment switch on Render. Never reads D1.
+  if(request.method==='POST'&&path==='/api/v1/ts/official-test'){
+   const base=String(env.TS_RENDER_URL||'').replace(/\/$/,'');
+   const token=String(env.TS_BRIDGE_TOKEN||'');
+   if(!/^https:\/\/[a-z0-9.-]+\.onrender\.com$/i.test(base)||token.length<32)
+     return err('Bridge Render non configurato',503);
+   if(Number(request.headers.get('content-length')||0)>512)return err('Richiesta troppo grande',413);
+   let data;try{data=await request.json()}catch{return err('Richiesta non valida')}
+   if(data?.confirmation!=='INVIA TEST UFFICIALE CON DATI FITTIZI'||Object.keys(data).length!==1)
+     return err('Conferma esplicita obbligatoria',400);
+   try{
+    const r=await fetch(base+'/ts/official-test',{method:'POST',
+      headers:{'Authorization':'Bearer '+token},redirect:'manual',signal:AbortSignal.timeout(70000)});
+    const b=await r.json();
+    return json(b,r.ok?200:r.status===412?412:502);
+   }catch{return err('Render non raggiungibile o risposta scaduta',502)}
+  }
   if(request.method==='GET'&&path==='/api/v1/ts/status'){
    const tables=await all(db,"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sm_ts_documents','sm_ts_events')");
    return json({schema_ready:tables.length===2,mode:'preparazione',live_transmission_enabled:false,credentials_configured:!!(env.TS_USERNAME&&env.TS_PASSWORD&&env.TS_PINCODE),notice:'La presenza delle credenziali non abilita l’invio: verificare WSDL, autorizzazioni e certificati ufficiali.'});
