@@ -33,8 +33,10 @@ async function renderSistemaTS(){
  }catch(e){toast(e.message)}finally{if(page==='sistema_ts')renderSistemaTS()}};
  try{const [status,docs]=await Promise.all([api('v1/ts/status'),api('v1/ts/documents')]);if(page!=='sistema_ts')return;
  $('#ts-status').textContent=status.schema_ready?'Database TS disponibile · Invio reale disabilitato':'Database TS non pronto: applicare la migrazione 0004_sistema_ts.sql';
- const rows=docs.items||[];$('#ts-documents').innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>Documento</th><th>Data</th><th>Paziente</th><th>Importo</th><th>Stato</th><th>Operazioni</th></tr></thead><tbody>${rows.map(d=>`<tr><td>${esc(d.document_number)}</td><td>${esc(d.document_date)}</td><td>${esc(d.last_name)} ${esc(d.first_name)}</td><td>${euro(d.total_cents)}</td><td>${esc(d.status)}</td><td><button data-ts-validate="${esc(d.id)}">Verifica</button> <button data-ts-history="${esc(d.id)}">Storico</button></td></tr>`).join('')}</tbody></table></div>`:'<p>Nessuna bozza TS. I documenti TS non sono ancora fatture fiscali emesse dal gestionale.</p>';
+ const rows=docs.items||[];$('#ts-documents').innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>Documento</th><th>Data</th><th>Paziente</th><th>Importo</th><th>Stato</th><th>Operazioni</th></tr></thead><tbody>${rows.map(d=>`<tr><td>${esc(d.document_number)}</td><td>${esc(d.document_date)}</td><td>${esc(d.last_name)} ${esc(d.first_name)}</td><td>${euro(d.total_cents)}</td><td>${esc(d.status)}</td><td><button data-ts-validate="${esc(d.id)}">Verifica</button> <button data-ts-history="${esc(d.id)}">Storico</button> ${['bozza','da_verificare','pronto_test'].includes(d.status)&&!d.protocol?`<button data-ts-edit="${esc(d.id)}">Modifica</button> <button data-ts-delete="${esc(d.id)}">Elimina</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<p>Nessuna bozza TS. I documenti TS non sono ancora fatture fiscali emesse dal gestionale.</p>';
  $$('[data-ts-validate]').forEach(b=>b.onclick=async()=>{try{const r=await api('v1/ts/documents/'+b.dataset.tsValidate+'/validate','POST',{});modal('Verifica preliminare TS',`<p>Invio possibile: <b>NO</b></p><ul>${(r.problems||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul><p>Nessun dato trasmesso.</p>`);await renderSistemaTS()}catch(e){toast(e.message)}});
+ $$('[data-ts-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Eliminare questa preparazione TS non trasmessa? Non cancella nessuna fattura.'))return;try{await api('v1/ts/documents/'+encodeURIComponent(b.dataset.tsDelete),'DELETE');toast('Documento TS di bozza eliminato');await renderSistemaTS()}catch(e){toast(e.message)}});
+ $$('[data-ts-edit]').forEach(b=>b.onclick=()=>tsEditDocument(rows.find(x=>x.id===b.dataset.tsEdit)));
  $$('[data-ts-history]').forEach(b=>b.onclick=async()=>{try{const r=await api('v1/ts/documents/'+b.dataset.tsHistory+'/events');modal('Storico documento TS',r.items.length?`<ul>${r.items.map(x=>`<li>${esc(x.created_at)} · ${esc(x.event_type)} ${esc(x.outcome||'')}</li>`).join('')}</ul>`:'<p>Nessun evento</p>')}catch(e){toast(e.message)}});
  }catch(e){if(page==='sistema_ts')$('#ts-documents').textContent=e.message}
 }
@@ -53,6 +55,25 @@ function tsNew(){const pts=state.patients||[];if(!pts.length){toast('Crea prima 
  }))
 }
 
+function tsEditDocument(d){
+ if(!d)return toast('Documento non trovato');
+ const pts=state.patients||[];
+ modal('Modifica documento TS non trasmesso',form(
+  select('Paziente','patient_id',pts.map(p=>[p.id,fullname(p)]),d.patient_id||'',true)+
+  field('Numero documento','document_number',d.document_number,'text',true,'maxlength="80"')+
+  field('Data documento','document_date',d.document_date,'date',true)+
+  field('Data pagamento','payment_date',d.payment_date,'date',true)+
+  select('Pagamento','payment_method',[['tracciabile','Tracciabile'],['contanti','Contanti'],['altro','Altro']],d.payment_method)+
+  field('Importo in euro','amount_eur',(d.total_cents/100).toFixed(2),'number',true,'min="0.01" step="0.01"')+
+  field('Codice spesa TS','expense_type',d.expense_type,'text',true,'maxlength="5"')+
+  select('Opposizione','opposition',[['0','No'],['1','Sì']],String(d.opposition)), 'Salva modifiche'),()=>bindForm(async f=>{
+   const total_cents=Math.round(Number(f.amount_eur)*100);
+   if(!Number.isSafeInteger(total_cents)||total_cents<=0)throw Error('Importo non valido');
+   await api('v1/ts/documents/'+encodeURIComponent(d.id),'PUT',{patient_id:f.patient_id,document_number:f.document_number,document_date:f.document_date,payment_date:f.payment_date,payment_method:f.payment_method,total_cents,expense_type:f.expense_type,opposition:f.opposition==='1'});
+   setTimeout(()=>{if(page==='sistema_ts')renderSistemaTS()},0);
+  }));
+}
+
 async function tsInvoicePreparations(){
  const target=$('#ts-invoice-preparations');if(!target)return;
  try{
@@ -60,8 +81,9 @@ async function tsInvoicePreparations(){
   if(!items.length){target.innerHTML='<p>Non risultano fatture emesse.</p>';return}
   target.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Fattura</th><th>Paziente</th><th>Totale</th><th>Pagamenti</th><th>Preparazione TS</th><th>Revisione</th><th></th></tr></thead><tbody>${items.map(i=>{
    const full=i.paid_cents===i.total_cents&&i.payment_count===1;
-   return `<tr><td>${esc(i.series+'/'+i.sequence+'/'+i.year)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)} (${i.payment_count})</td><td>${esc(i.ts_status||'Non preparata')}</td><td>${i.preparation_id?(i.opposition?'Opposizione':i.reviewed_at?'Registrata (ricontrollare)':'Da verificare'):'—'}</td><td>${i.preparation_id&&!i.opposition?`<button data-ts-review=\"${esc(i.id)}\">Verifica</button>`:!i.preparation_id&&full?`<button data-ts-prepare="${esc(i.id)}">Prepara</button>`:'—'}</td></tr>`
+   return `<tr><td>${esc(i.series+'/'+i.sequence+'/'+i.year)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)} (${i.payment_count})</td><td>${esc(i.ts_status||'Non preparata')}</td><td>${i.preparation_id?(i.opposition?'Opposizione':i.reviewed_at?'Registrata (ricontrollare)':'Da verificare'):'—'}</td><td>${i.preparation_id&&!i.opposition?`<button data-ts-review=\"${esc(i.id)}\">Verifica</button>`:!i.preparation_id&&full?`<button data-ts-prepare="${esc(i.id)}">Prepara</button>`:'—'} ${i.preparation_id?`<button data-ts-prep-delete="${esc(i.id)}">Elimina preparazione</button>`:''}</td></tr>`
   }).join('')}</tbody></table></div><p class="notice">Nessun invio reale: classificazione manuale e verifica fiscale obbligatoria. Fatture con pagamenti parziali o multipli non ancora supportate.</p>`;
+  $$('[data-ts-prep-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Eliminare la preparazione TS interna? La fattura emessa resterà invariata.'))return;try{await api('v1/ts/invoice-preparations/'+encodeURIComponent(b.dataset.tsPrepDelete),'DELETE');toast('Preparazione TS eliminata, fattura conservata');await tsInvoicePreparations()}catch(e){toast(e.message)}});
   $$('[data-ts-prepare]').forEach(button=>button.onclick=()=>tsPrepareInvoice(button.dataset.tsPrepare));
   $$('[data-ts-review]').forEach(button=>button.onclick=()=>tsReviewInvoice(button.dataset.tsReview));
  }catch(e){target.textContent=e.message}
