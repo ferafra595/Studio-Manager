@@ -1,7 +1,19 @@
 // Interfaccia TS - solo bozze, nessun invio reale.
 async function renderSistemaTS(){
- const main=$('#main');main.innerHTML='<section class="card"><h2>Sistema Tessera Sanitaria · Preparazione</h2><p>Ambiente di sviluppo. Nessuna trasmissione a TS. Usare esclusivamente pazienti fittizi.</p><div id="ts-status">Verifica database...</div><div class="form-actions"><button class="primary" id="ts-new">Nuova bozza TS</button><button id="ts-reload">Aggiorna</button><button id="ts-dry-run">Collauda SOAP (dati fittizi)</button></div></section><section class="card"><h2>Documenti TS</h2><div id="ts-documents">Caricamento...</div></section>';
+ const main=$('#main');main.innerHTML='<section class="card"><h2>Sistema Tessera Sanitaria · Preparazione</h2><p>Ambiente di sviluppo. Nessuna trasmissione a TS. Usare esclusivamente pazienti fittizi.</p><div id="ts-status">Verifica database...</div><div class="form-actions"><button class="primary" id="ts-new">Nuova bozza TS</button><button id="ts-reload">Aggiorna</button><button id="ts-dry-run">Collauda SOAP (dati fittizi)</button><button id="ts-official-test" title="Invio esterno solo di dati sintetici al servizio TEST">Invio ufficiale TEST (demo)</button></div></section><section class="card"><h2>Documenti TS</h2><div id="ts-documents">Caricamento...</div></section>';
  $('#ts-new').onclick=tsNew;$('#ts-reload').onclick=renderSistemaTS;
+ $('#ts-official-test').onclick=async()=>{
+  if(!window.confirm('Questo test invia davvero un documento SINTETICO al server TEST del Sistema TS, usando le credenziali demo del kit. Non saranno usate fatture o dati dei pazienti. Vuoi continuare?'))return;
+  const btn=$('#ts-official-test');btn.disabled=true;btn.textContent='Invio demo in corso...';
+  try{
+   const r=await api('v1/ts/official-test','POST',{confirmation:'INVIA TEST UFFICIALE CON DATI FITTIZI'});
+   const result=r.response||{};
+   const bits=[`Richiesta spedita: ${r.transmitted?'Sì':'No'}`,`Risposta server TS: ${r.official_response_received?'Ricevuta':'Non ricevuta'}`,
+       `HTTP: ${r.http_status??'n/d'}`,`Esito TS: ${result.esito??'n/d'}`,`Protocollo: ${result.protocollo??'n/d'}`,
+       `SOAP Fault: ${result.soap_fault?'Sì':'No'}`,`Errore di trasporto: ${r.transport_error_type||'nessuno'}`];
+   modal('Risposta del servizio ufficiale TEST',`<p>${bits.map(s=>esc(s)).join('</p><p>')}</p><p>Solo dati dimostrativi. Nessuna fattura reale inviata.</p>`);
+  }catch(e){toast(e.message)}finally{if(page==='sistema_ts')renderSistemaTS()}
+ };
  $('#ts-dry-run').onclick=async()=>{try{
   const b=$('#ts-dry-run');b.disabled=true;b.textContent='Verifica in corso...';
   const r=await api('v1/ts/test-dry-run','POST',{});
