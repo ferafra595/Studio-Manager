@@ -93,13 +93,20 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   return respond({invoice,lines:await all(db,'SELECT position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents FROM sm_invoice_lines WHERE invoice_id=? ORDER BY position',invoice.id),payments:await all(db,'SELECT * FROM sm_invoice_payments WHERE invoice_id=? ORDER BY paid_on,created_at',invoice.id),events:await all(db,'SELECT action,detail,created_at FROM sm_invoice_events WHERE invoice_id=? ORDER BY created_at DESC',invoice.id)});
  }
  if(method==='POST'&&path==='/api/v1/billing/invoices'){
-  const b=await body(request),pid=s(b.patient_id),aid=s(b.appointment_id)||null,date=s(b.issue_date),desc=s(b.description),series=s(b.series||'A').toUpperCase(),nature=s(b.vat_nature).toUpperCase();
-  if(!validDate(date)||!pid||!desc||desc.length>400||!/^[A-Z0-9]{1,8}$/.test(series)||nature.length>10)return fail('Dati fattura incompleti o non validi');
+  const b=await body(request),pid=s(b.patient_id),aid=s(b.appointment_id)||null,date=s(b.issue_date),series=s(b.series||'A').toUpperCase();
+  if(!validDate(date)||!pid||!/^[A-Z0-9]{1,8}$/.test(series))return fail('Dati fattura incompleti o non validi');
   const p=await one(db,'SELECT id FROM sm_patients WHERE id=?',pid);if(!p)return fail('Paziente inesistente',404);
   if(aid&&!await one(db,'SELECT id FROM sm_appointments WHERE id=? AND patient_id=?',aid,pid))return fail('Appuntamento non appartenente al paziente');
-  const m=calculate(b);const invoiceId=id();
-  await db.prepare(`INSERT INTO sm_invoices(id,patient_id,appointment_id,issue_date,year,series,description,quantity,unit_cents,vat_rate_bp,vat_nature,stamp_cents,taxable_cents,vat_cents,total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(invoiceId,pid,aid,date,Number(date.slice(0,4)),series,desc,m.qty,m.unit,m.vat,nature,m.stamp,m.taxable,m.vatCents,m.total).run();
-  await event(db,invoiceId,'bozza_creata');return respond({id:invoiceId,status:'bozza'},201);
+  const lines=checkLines(Array.isArray(b.lines)?b.lines:[{description:b.description,quantity:b.quantity,unit_cents:b.unit_cents,vat_rate_bp:b.vat_rate_bp,vat_nature:b.vat_nature}]);
+  const stamp=Number(b.stamp_cents);if(![0,200].includes(stamp))return fail('Bollo non valido');
+  const taxable=lines.reduce((sum,l)=>sum+l.taxable,0),vat=lines.reduce((sum,l)=>sum+l.vat,0),total=taxable+vat+stamp;
+  if(!Number.isSafeInteger(total)||total<=0||total>100000000)return fail('Totale non valido');
+  const invoiceId=id(),first=lines[0];
+  const statements=[db.prepare(`INSERT INTO sm_invoices(id,patient_id,appointment_id,issue_date,year,series,description,quantity,unit_cents,vat_rate_bp,vat_nature,stamp_cents,taxable_cents,vat_cents,total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(invoiceId,pid,aid,date,Number(date.slice(0,4)),series,first.description,first.quantity,first.unit,first.rate,first.nature,stamp,taxable,vat,total)];
+  lines.forEach((l,i)=>statements.push(db.prepare('INSERT INTO sm_invoice_lines(id,invoice_id,position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(id(),invoiceId,i+1,l.description,l.quantity,l.unit,l.rate,l.nature,l.taxable,l.vat)));
+  statements.push(db.prepare('INSERT INTO sm_invoice_events(id,invoice_id,action,detail) VALUES(?,?,?,?)').bind(id(),invoiceId,'bozza_creata',`${lines.length} prestazioni`));
+  await db.batch(statements);
+  return respond({id:invoiceId,status:'bozza',total_cents:total},201);
  }
  if(method==='POST'&&/^\/api\/v1\/billing\/invoices\/[^/]+\/issue$/.test(path)){
   const invoiceId=path.split('/')[5],inv=await one(db,'SELECT * FROM sm_invoices WHERE id=?',invoiceId);if(!inv)return fail('Documento non trovato',404);
