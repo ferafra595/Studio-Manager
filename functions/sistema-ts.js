@@ -33,6 +33,23 @@ export async function sistemaTS({request,env},path){
       notice:'Nessuna credenziale o fattura è stata inviata.'},200);
    }
   }
+  // Bridge check: no patients, invoices or credentials from browser to Render.
+  // The Cloudflare worker authenticates to Render with a shared server-side secret.
+  if(request.method==='POST'&&path==='/api/v1/ts/test-dry-run'){
+   const base=String(env.TS_RENDER_URL||'').replace(/\/$/,'');
+   const token=String(env.TS_BRIDGE_TOKEN||'');
+   if(!/^https:\/\/[a-z0-9.-]+\.onrender\.com$/i.test(base)||token.length<32)
+     return err('Configura TS_RENDER_URL e TS_BRIDGE_TOKEN nei secret Cloudflare',503);
+   try{
+    const r=await fetch(base+'/ts/test-dry-run',{
+     method:'POST',headers:{'Authorization':'Bearer '+token},
+     redirect:'manual',signal:AbortSignal.timeout(20000)
+    });
+    const b=await r.json();
+    if(!r.ok)return json({ok:false,reason:b.error||'test_backend_non_riuscito'},502);
+    return json({ok:!!(b.xsd_valid&&b.soap_action_verified&&!b.transmitted),...b});
+   }catch{return err('Render non raggiungibile o timeout',502)}
+  }
   if(request.method==='GET'&&path==='/api/v1/ts/status'){
    const tables=await all(db,"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sm_ts_documents','sm_ts_events')");
    return json({schema_ready:tables.length===2,mode:'preparazione',live_transmission_enabled:false,credentials_configured:!!(env.TS_USERNAME&&env.TS_PASSWORD&&env.TS_PINCODE),notice:'La presenza delle credenziali non abilita l’invio: verificare WSDL, autorizzazioni e certificati ufficiali.'});
