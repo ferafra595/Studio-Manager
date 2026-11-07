@@ -1,5 +1,6 @@
 """Read-only Sistema TS TEST TLS probe. Never sends credentials or documents."""
 import base64
+import hmac
 import json
 import os
 import socket
@@ -58,6 +59,28 @@ def peer_diagnostics():
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        # This endpoint handles ONLY a local synthetic fixture; caller sends no PII.
+        if self.path != '/ts/test-dry-run':
+            return self.send_json(404, {'error': 'not found'})
+        token = os.getenv('TS_BRIDGE_TOKEN', '')
+        supplied = self.headers.get('Authorization', '')
+        if (len(token) < 32 or not hmac.compare_digest(supplied, 'Bearer ' + token)):
+            return self.send_json(401, {'error': 'not authorized'})
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            return self.send_json(400, {'error': 'invalid content length'})
+        if length != 0:
+            return self.send_json(400, {'error': 'no request body accepted'})
+        try:
+            from ts_test_connector import verify_test_fixture
+            return self.send_json(200, verify_test_fixture())
+        except Exception as exc:
+            # Never include secrets, documents, XML or raw exceptions.
+            return self.send_json(503, {'error': 'test_fixture_validation_failed',
+                                        'reason_type': type(exc).__name__})
+
     def do_GET(self):
         if self.path not in ('/', '/health', '/probe'):
             return self.send_json(404, {'error': 'not found'})

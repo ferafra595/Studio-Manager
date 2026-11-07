@@ -1,1 +1,2 @@
-# No external dependencies
+cryptography>=43,<47
+lxml>=5,<7
