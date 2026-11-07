@@ -62,7 +62,8 @@ def peer_diagnostics():
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # This endpoint handles ONLY a local synthetic fixture; caller sends no PII.
-        if urlsplit(self.path).path != '/ts/test-dry-run':
+        route = urlsplit(self.path).path
+        if route not in ('/ts/test-dry-run', '/ts/official-test'):
             return self.send_json(404, {'error': 'not found'})
         token = os.getenv('TS_BRIDGE_TOKEN', '')
         supplied = self.headers.get('Authorization', '')
@@ -74,6 +75,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(400, {'error': 'invalid content length'})
         if length != 0:
             return self.send_json(400, {'error': 'no request body accepted'})
+        if route == '/ts/official-test':
+            try:
+                from ts_official_test import OfficialTestBlocked, send_official_test
+                return self.send_json(200, send_official_test())
+            except OfficialTestBlocked as exc:
+                return self.send_json(412, {'error': str(exc), 'transmitted': False})
+            except Exception as exc:
+                return self.send_json(503, {'error': 'official_test_failed',
+                                            'reason_type': type(exc).__name__})
         try:
             from ts_test_connector import verify_test_fixture
             return self.send_json(200, verify_test_fixture())
