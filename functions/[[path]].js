@@ -1,3 +1,4 @@
+import { fatture } from './fatture.js';
 import { sistemaTS } from './sistema-ts.js';
 import {phase1} from './phase1.js';
 // Studio Manager - Cloudflare Pages Functions. ACCESSO DEMO SOLO ADMIN.
@@ -29,6 +30,7 @@ export async function onRequest({request,env}){
  if(path.startsWith('/api/v1/')){
   if(!await isAuthenticated(request,env))return json({error:'Accesso richiesto'},401);
   if(request.method!=='GET'&&request.headers.get('origin')!==url.origin)return json({error:'Origine non consentita'},403);
+  if(path.startsWith('/api/v1/billing/'))return fatture({request,env},path);
   if(path.startsWith('/api/v1/ts/'))return sistemaTS({request,env},path);
   return phase1({request,env},path);
  }
