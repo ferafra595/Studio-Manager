@@ -9,22 +9,24 @@ async function renderBilling(){
  $$('[data-bill-open]').forEach(b=>b.onclick=()=>billingDetail(b.dataset.billOpen));
  }catch(e){if(page==='fatture')$('#bill-list').textContent=e.message}
 }
-function billingNew(){const pts=state.patients||[];if(!pts.length){toast('Crea prima un paziente di prova');return}
+function billingNew(){
+ const pts=state.patients||[];if(!pts.length){toast('Crea prima un paziente di prova');return}
  const appts=state.appointments||[];
- modal('Nuova bozza fattura',`<p class="sub">Questa operazione crea una bozza. La numerazione viene assegnata solo con «Emetti».</p>`+form(
- select('Paziente','patient_id',pts.map(p=>[p.id,fullname(p)]))+
- select('Appuntamento (facoltativo)','appointment_id',[['','Nessuno'],...appts.map(a=>[a.id,`${a.start_at} · ${fullname(pat(a.patient_id))}`])])+
- field('Data fattura','issue_date',today(),'date',true)+field('Serie','series','A','text',true,'maxlength="8"')+
- field('Prestazione / descrizione','description','','text',true,'maxlength="400"')+
- field('Quantità','quantity','1','number',true,'min="1" max="10000"')+
- field('Prezzo unitario €','unit_eur','','number',true,'min="0" step="0.01"')+
- field('Aliquota IVA %','vat_pct','0','number',true,'min="0" max="100" step="0.01"')+
- field('Natura IVA (se applicabile)','vat_nature','','text',false,'maxlength="10"')+
- select('Imposta di bollo','stamp_cents',[['0','Nessuna'],['200','€ 2,00']]),'Salva bozza'),()=>bindForm(async b=>{
- const cents=billingCents(b.unit_eur),vat=billingPercent(b.vat_pct);
- await api('v1/billing/invoices','POST',{patient_id:b.patient_id,appointment_id:b.appointment_id||null,issue_date:b.issue_date,series:b.series,description:b.description,quantity:Number(b.quantity),unit_cents:cents,vat_rate_bp:vat,vat_nature:b.vat_nature,stamp_cents:Number(b.stamp_cents)});
- setTimeout(()=>{if(page==='fatture')renderBilling()},0)
- }))
+ const lines=[{description:'',quantity:'1',unit_eur:'',vat_pct:'0',vat_nature:''}];
+ const root=`<div class="billing-create"><p class="sub">Inserisci tutte le prestazioni in un’unica schermata. Nessuna trasmissione fiscale.</p><form id="bill-create-form"><div class="billing-create-head">${select('Paziente','patient_id',pts.map(p=>[p.id,fullname(p)]))}${select('Appuntamento (facoltativo)','appointment_id',[['','Nessuno'],...appts.map(a=>[a.id,`${a.start_at} · ${fullname(pat(a.patient_id))}`])])}${field('Data fattura','issue_date',today(),'date',true)}${field('Serie','series','A','text',true,'maxlength="8"')}</div><div class="billing-create-layout"><div><h3>Prestazioni</h3><div id="bill-create-lines"></div><button type="button" id="bill-create-add">+ Aggiungi prestazione</button></div><aside class="billing-create-summary"><h3>Riepilogo</h3><div id="bill-create-totals"></div>${select('Bollo','stamp_cents',[['0','Nessuno'],['200','€ 2,00']])}<p class="sub">IVA, esenzione e bollo devono essere verificati prima dell'emissione.</p></aside></div><div class="form-actions"><button type="button" id="bill-create-cancel">Annulla</button><button class="primary" type="submit" id="bill-create-save">Salva bozza</button></div></form></div>`;
+ modal('Nuova fattura',root);
+ const dialog=document.querySelector('#overlay .dialog');dialog.classList.add('billing-dialog');
+ const clean=()=>dialog.classList.remove('billing-dialog');
+ const oldClose=window.billingCreateCleanup;window.billingCreateCleanup=clean;
+ $('#bill-create-cancel').onclick=()=>{clean();close()};
+ const row=(l,n)=>`<div class="billing-line" data-line="${n}"><div class="billing-line-title"><strong>Prestazione ${n+1}</strong><button type="button" data-remove="${n}" ${lines.length===1?'disabled':''} aria-label="Rimuovi prestazione">Rimuovi</button></div><div class="billing-line-grid">${field('Descrizione','desc_'+n,l.description,'text',true,'maxlength="400"')}${field('Quantità','qty_'+n,l.quantity,'number',true,'min="1" max="10000"')}${field('Prezzo unitario €','price_'+n,l.unit_eur,'number',true,'min="0" step="0.01"')}${field('IVA %','vat_'+n,l.vat_pct,'number',true,'min="0" max="100" step="0.01"')}${field('Natura IVA (se 0%)','nature_'+n,l.vat_nature,'text',false,'maxlength="10"')}</div></div>`;
+ const sync=()=>{const f=$('#bill-create-form');if(!f)return;const d=new FormData(f);lines.forEach((l,n)=>{l.description=String(d.get('desc_'+n)||'');l.quantity=String(d.get('qty_'+n)||'1');l.unit_eur=String(d.get('price_'+n)||'');l.vat_pct=String(d.get('vat_'+n)||'0');l.vat_nature=String(d.get('nature_'+n)||'')})};
+ function totals(){let taxable=0,vat=0;let valid=true;for(const l of lines){const q=Number(l.quantity),price=Number(l.unit_eur),rate=Number(l.vat_pct);if(!Number.isFinite(q)||q<1||!Number.isFinite(price)||price<0||!Number.isFinite(rate)||rate<0){valid=false;break}const base=Math.round(price*100)*q;taxable+=base;vat+=Math.round(base*rate/100)}const stamp=Number($('#bill-create-form [name="stamp_cents"]').value||0);$('#bill-create-totals').innerHTML=valid?`<div>Prestazioni <strong>${lines.length}</strong></div><div>Imponibile <strong>${euro(taxable)}</strong></div><div>IVA <strong>${euro(vat)}</strong></div><div>Bollo <strong>${euro(stamp)}</strong></div><div class="billing-total">Totale <strong>${euro(taxable+vat+stamp)}</strong></div>`:'<p>Controlla quantità, prezzi e IVA.</p>'}
+ function draw(){const holder=$('#bill-create-lines');holder.innerHTML=lines.map(row).join('');holder.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>{sync();totals()}));holder.querySelectorAll('[data-remove]').forEach(btn=>btn.onclick=()=>{sync();if(lines.length===1)return;lines.splice(Number(btn.dataset.remove),1);draw()});totals()}
+ $('#bill-create-add').onclick=()=>{sync();if(lines.length>=30)return toast('Massimo 30 prestazioni');lines.push({description:'',quantity:'1',unit_eur:'',vat_pct:'0',vat_nature:''});draw()};
+ $('#bill-create-form [name="stamp_cents"]').onchange=totals;
+ $('#bill-create-form').onsubmit=async e=>{e.preventDefault();sync();const btn=$('#bill-create-save');btn.disabled=true;try{const data=new FormData(e.currentTarget);const payload={patient_id:data.get('patient_id'),appointment_id:data.get('appointment_id')||null,issue_date:data.get('issue_date'),series:data.get('series'),stamp_cents:Number(data.get('stamp_cents')),lines:lines.map(l=>({description:l.description,quantity:Number(l.quantity),unit_cents:billingCents(l.unit_eur),vat_rate_bp:billingPercent(l.vat_pct),vat_nature:l.vat_nature.trim().toUpperCase()}))};await api('v1/billing/invoices','POST',payload);clean();close();await renderBilling();toast('Bozza creata con '+lines.length+' prestazioni')}catch(err){toast(err.message)}finally{btn.disabled=false}};
+ draw();
 }
 function billingCents(value){const v=String(value).trim();if(!/^\d+(?:\.\d{1,2})?$/.test(v))throw Error('Importo: usa massimo due decimali, separati dal punto');const [a,b='']=v.split('.');const n=Number(a)*100+Number(b.padEnd(2,'0'));if(!Number.isSafeInteger(n))throw Error('Importo troppo grande');return n}
 function billingPercent(value){return billingCents(value)}
@@ -72,3 +74,7 @@ function billingEditLines(invoiceId,existing,stamp){
  }
  show();
 }
+
+// Evita che la larghezza del modulo resti attiva nelle finestre successive.
+const billingOriginalModal=modal;
+modal=function(...args){document.querySelector('#overlay .dialog')?.classList.remove('billing-dialog');return billingOriginalModal(...args)};
