@@ -20,8 +20,15 @@ import urllib.error
 # From official kit 730P, SoggettoAltriProfessionisti/UtenzeTestAltriProfessionisti.txt.
 DEMO_USER = 'MTOMRA66A41G224M'
 DEMO_PIVA = '65498732105'
-DEMO_CF = 'RSSMRA80A01H501U'  # illustrative fictitious value, never from patient DB
-DEMO_OWNER = DEMO_USER
+# Ciphertexts copied from the OFFICIAL demo request in the TS 2024 kit:
+# SoggettoAltriProfessionisti/730AltriProfessionisti-soapui-project.xml
+# They are publicly distributed demo fixtures, NOT real patient identifiers.
+DEMO_CF_ENCRYPTED = ('iKvd9JQntqxPBT2UA/OFfztSNLidocP8Op+NfODzfTdxFWzkcdZrJz5gvCuqv7Dh/'
+                     'r3Cin1ZQMmg/BofIqYCyq2PcC+PJzbvQCocDdl6FrXVXs3W5JhnX7VpWFGCLPYYY2WL+'
+                     'RWKxhfkGqeY8+NCVfQ1lEA15g3W5AabJ15Tthk=')
+DEMO_OWNER_ENCRYPTED = ('SsFrZY1plknIYKxk2MxIsgCyH2X3cfnrbg7B1aywMzw4SYwfzCa797Bb40vZMlS'
+                        '1pRjBki3SYZT/dao7W7SCwarTTLQqFmfXu7SGBStGzfAyVWcXAZapnW3d8QWfY7E'
+                        'gbktdHPfcoslCqY+K4JJrHQA9H2bk2ngSA7n+xOjuLVw=')
 EXPECTED_CERT_SHA256 = '8e7e187dae448d92f78b30dda6253cf5fc6105d2afdc85111ca729708e07de01'
 KIT_CERT = Path(__file__).resolve().parent / 'certificates' / 'SanitelCF.cer'
 KIT_XSD = Path(__file__).resolve().parent / 'specs' / 'DocumentoSpesa730pSchema.xsd'
@@ -58,14 +65,16 @@ def preflight():
         raise OfficialTestBlocked('ca_test_non_configurata')
 
     today = date.today().isoformat()
-    # The request is a synthetic TEST receipt. Date/number are not from invoicing.
+    # Match the official 'Altri professionisti' demo identity, encrypted fields,
+    # expense type and amount. Use a new unique TEST document number/date so
+    # this request is not a replay of the published example invoice.
     doc = {
         'partita_iva': DEMO_PIVA, 'data_emissione': today,
         'dispositivo': '001', 'numero_documento': 'TST-' + date.today().strftime('%y%m%d') + '-' + secrets.token_hex(3).upper(),
         'data_pagamento': today, 'pagamento_tracciato': 'SI',
-        'opposizione': False, 'cf_cittadino_cifrato': _encrypt_test(DEMO_CF),
-        'proprietario': {'cfProprietario': _encrypt_test(DEMO_OWNER)},
-        'voci_spesa': [{'tipo': 'SR', 'importo': '1.00'}],
+        'opposizione': False, 'cf_cittadino_cifrato': DEMO_CF_ENCRYPTED,
+        'proprietario': {'cfProprietario': DEMO_OWNER_ENCRYPTED},
+        'voci_spesa': [{'tipo': 'SP', 'importo': '25.30'}],
     }
     xml, action = build(doc, 'inserimento', pincode_cifrato='ENC:' + _encrypt_test(pincode))
     root = etree.fromstring(xml, parser=etree.XMLParser(resolve_entities=False, no_network=True))
@@ -99,7 +108,7 @@ def send_official_test():
         parsed = parse_response(payload)
         # Do not forward raw XML; only bounded status/protocol fields.
         return {'transmitted': True, 'http_status': status, 'official_response_received': True,
-                'environment': 'TEST', 'response': parsed}
+                'environment': 'TEST', 'response': parsed, 'fixture': 'official_demo_professionisti_2024'}
     except Exception:
         return {'transmitted': True, 'http_status': status, 'official_response_received': True,
                 'response_parse_error': True, 'environment': 'TEST'}
