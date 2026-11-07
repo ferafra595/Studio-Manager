@@ -57,6 +57,30 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   if(!result)return fail('Documento già emesso o modificato',409);
   await event(db,invoiceId,'emessa',inv.series+'/'+result.sequence+'/'+inv.year);return respond({ok:true,number:`${inv.series}/${result.sequence}/${inv.year}`});
  }
+ if(method==='POST'&&/^\/api\/v1\/billing\/invoices\/[^/]+\/credit-note$/.test(path)){
+  const originalId=path.split('/')[5];
+  const original=await one(db,'SELECT * FROM sm_invoices WHERE id=?',originalId);
+  if(!original||original.kind!=='fattura'||original.status!=='emessa')return fail('La nota di credito richiede una fattura originale emessa',409);
+  const existing=await one(db,"SELECT id FROM sm_invoices WHERE original_invoice_id=? AND kind='nota_credito'",originalId);
+  if(existing)return fail('Esiste già una nota di credito per questa fattura; verificare prima di procedere',409);
+  const b=await body(request),date=s(b.issue_date),reason=s(b.reason);
+  if(!validDate(date)||!reason||reason.length>250||date<original.issue_date)return fail('Data o causale non valide');
+  const noteId=id(),description='Nota di credito per '+original.series+'/'+original.sequence+'/'+original.year+' — '+reason;
+  await db.prepare(`INSERT INTO sm_invoices(id,patient_id,kind,original_invoice_id,issue_date,year,series,description,quantity,unit_cents,vat_rate_bp,vat_nature,stamp_cents,taxable_cents,vat_cents,total_cents) VALUES(?,?,'nota_credito',?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(noteId,original.patient_id,originalId,date,Number(date.slice(0,4)),original.series,description,original.quantity,original.unit_cents,original.vat_rate_bp,original.vat_nature,original.stamp_cents,original.taxable_cents,original.vat_cents,original.total_cents).run();
+  await event(db,noteId,'nota_credito_bozza',originalId);return respond({id:noteId,status:'bozza',kind:'nota_credito'},201);
+ }
+ if(method==='GET'&&/^\/api\/v1\/billing\/invoices\/[^/]+\/ts-preview$/.test(path)){
+  const invoiceId=path.split('/')[5],inv=await one(db,'SELECT * FROM sm_invoices WHERE id=?',invoiceId);
+  if(!inv)return fail('Documento non trovato',404);
+  const payments=await all(db,'SELECT paid_on,amount_cents,method FROM sm_invoice_payments WHERE invoice_id=? ORDER BY paid_on,created_at',invoiceId);
+  const problems=[];
+  if(inv.kind!=='fattura'||inv.status!=='emessa')problems.push('Serve una fattura emessa');
+  if(!payments.length)problems.push('Nessun pagamento registrato');
+  if(payments.reduce((sum,p)=>sum+p.amount_cents,0)!==inv.total_cents)problems.push('Pagamenti non corrispondenti al totale');
+  if(payments.some(p=>p.method==='altro'))problems.push('Verificare tracciabilità del pagamento');
+  problems.push('Confermare tipo spesa TS, opposizione del paziente, trattamento fiscale e soggetto inviante');
+  return respond({invoice_id:invoiceId,number:inv.sequence?`${inv.series}/${inv.sequence}/${inv.year}`:null,total_cents:inv.total_cents,payments,eligible_for_auto_send:false,problems,notice:'Anteprima locale; nessun documento TS creato o trasmesso.'});
+ }
  if(method==='POST'&&/^\/api\/v1\/billing\/invoices\/[^/]+\/payments$/.test(path)){
   const invoiceId=path.split('/')[5],b=await body(request),amount=Number(b.amount_cents),paidOn=s(b.paid_on),method=s(b.method),reference=s(b.reference);
   if(!Number.isSafeInteger(amount)||amount<=0||!validDate(paidOn)||!['contanti','carta','bonifico','assegno','altro'].includes(method)||reference.length>160)return fail('Pagamento non valido');
