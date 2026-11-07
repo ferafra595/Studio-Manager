@@ -90,19 +90,55 @@ def build(d, operation='inserimento', *, pincode_cifrato):
     return ET.tostring(root,encoding='utf-8',xml_declaration=True),action
 
 def parse_response(xml):
-    """Parsa esiti SOAP senza esportare XML integrale o dati personali nei log."""
-    if len(xml)>1024*1024: raise ValueError('Risposta troppo grande')
-    root=ET.fromstring(xml)
-    fault=root.find(f'.//{{{SOAP}}}Fault')
+    """Interpreta la risposta SOAP del servizio TS sincrono (senza loggare XML o PII).
+
+    0 = accolto, 1 = errore bloccante, 2 = accolto con segnalazioni.
+    HTTP 200 non costituisce una conferma dell'acquisizione del documento.
+    """
+    if not isinstance(xml, (bytes, bytearray)) or len(xml) > 65536:
+        raise ValueError('Risposta SOAP non valida o troppo grande')
+    root = ET.fromstring(xml)
+    def local(node):
+        return node.tag.rsplit('}', 1)[-1] if isinstance(node.tag, str) else ''
+    def value(node, limit=250):
+        return (node.text or '').strip()[:limit] if node is not None else None
+    def direct(parent, tag):
+        return next((c for c in parent if local(c) == tag), None) if parent is not None else None
+    body = next((n for n in root if local(n) == 'Body'), None) if local(root) == 'Envelope' else None
+    if body is None:
+        raise ValueError('Envelope SOAP privo di Body')
+    fault = direct(body, 'Fault')
     if fault is not None:
-        return {'soap_fault':True,'code':fault.findtext('faultcode','')[:100], 'message':fault.findtext('faultstring','')[:250]}
-    def txt(tag):
-        n=next((n for n in root.iter() if n.tag.rsplit('}',1)[-1]==tag),None)
-        return (n.text or '')[:250] if n is not None else None
-    messages=[]
-    for n in root.iter():
-        if n.tag.rsplit('}',1)[-1]=='messaggio':
-            obj={c.tag.rsplit('}',1)[-1]:(c.text or '')[:250] for c in n}
-            messages.append(obj)
-            if len(messages)>=50: break
-    return {'soap_fault':False,'esito':txt('esitoChiamata'),'protocollo':txt('protocollo'),'messaggi':messages}
+        return {'soap_fault': True, 'esito': None, 'stato': 'errore_soap',
+                'accepted': False, 'protocollo': None,
+                'code': value(direct(fault, 'faultcode'), 100),
+                'message': value(direct(fault, 'faultstring'), 250),
+                'messaggi': []}
+    response = next((n for n in body if local(n).endswith('Response')), None)
+    if response is None:
+        raise ValueError('Risposta SOAP TS non riconosciuta')
+    esito = value(direct(response, 'esitoChiamata'), 20)
+    protocollo = value(direct(response, 'protocollo'), 40)
+    # Il protocollo TS del servizio sincrono è un identificativo di 17 cifre.
+    if not (protocollo and re.fullmatch(r'\d{17}', protocollo)):
+        protocollo = None
+    messages = []
+    lista = direct(response, 'listaMessaggi')
+    if lista is not None:
+        for item in lista:
+            if local(item) != 'messaggio':
+                continue
+            messages.append({'codice': value(direct(item, 'codice'), 40) or '',
+                             'descrizione': value(direct(item, 'descrizione'), 350) or '',
+                             'tipo': value(direct(item, 'tipo'), 10) or ''})
+            if len(messages) >= 50:
+                break
+    states = {'0': 'accolto', '1': 'errore_bloccante', '2': 'accolto_con_segnalazioni'}
+    stato = states.get(esito, 'da_verificare')
+    # Un eventuale esito positivo senza protocollo non va presentato come acquisito.
+    accepted = esito in ('0', '2') and bool(protocollo)
+    if esito in ('0', '2') and not protocollo:
+        stato = 'da_verificare'
+    return {'soap_fault': False, 'esito': esito, 'stato': stato,
+            'accepted': accepted, 'protocollo': protocollo,
+            'messaggi': messages}
