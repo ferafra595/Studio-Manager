@@ -8,10 +8,21 @@ async function renderSistemaTS(){
   try{
    const r=await api('v1/ts/official-test','POST',{confirmation:'INVIA TEST UFFICIALE CON DATI FITTIZI'});
    const result=r.response||{};
+   const esito=String(result.esito??'');
+   const states={'0':'ACCOLTO senza segnalazioni','1':'SCARTATO: errore bloccante','2':'ACCOLTO con segnalazioni'};
+   let summary=states[esito]||'ESITO NON DETERMINATO';
+   if(result.soap_fault)summary='ERRORE SOAP';
+   if((esito==='0'||esito==='2')&&!result.protocollo)summary='DA VERIFICARE: protocollo assente';
    const bits=[`Richiesta spedita: ${r.transmitted?'Sì':'No'}`,`Risposta server TS: ${r.official_response_received?'Ricevuta':'Non ricevuta'}`,
-       `HTTP: ${r.http_status??'n/d'}`,`Esito TS: ${result.esito??'n/d'}`,`Protocollo: ${result.protocollo??'n/d'}`,
-       `SOAP Fault: ${result.soap_fault?'Sì':'No'}`,`Errore di trasporto: ${r.transport_error_type||'nessuno'}`];
-   modal('Risposta del servizio ufficiale TEST',`<p>${bits.map(s=>esc(s)).join('</p><p>')}</p><p>Solo dati dimostrativi. Nessuna fattura reale inviata.</p>`);
+       `HTTP: ${r.http_status??'n/d'}`,`Esito TS: ${esito||'n/d'}`,`Stato documento: ${summary}`,
+       `Protocollo: ${result.protocollo||'n/d'}`,`SOAP Fault: ${result.soap_fault?'Sì':'No'}`,
+       `Errore di trasporto: ${r.transport_error_type||'nessuno'}`];
+   const msgs=Array.isArray(result.messaggi)?result.messaggi.slice(0,50):[];
+   const messageHtml=msgs.length?'<h3>Messaggi ufficiali TS</h3><ul>'+msgs.map(m=>
+       `<li><b>${esc(String(m.tipo??''))} · ${esc(String(m.codice??''))}</b>: ${esc(String(m.descrizione??''))}</li>`).join('')+'</ul>':'<p>Nessun messaggio dettagliato presente nella risposta ricevuta.</p>';
+   const faultHtml=result.soap_fault?`<p><b>SOAP Fault:</b> ${esc(String(result.code||''))} — ${esc(String(result.message||''))}</p>`:'';
+   const note='<p><b>Attenzione:</b> HTTP 200 non significa documento acquisito. Con esito 1 il documento è scartato. Non ripetere il test automaticamente.</p>';
+   modal('Risposta del servizio ufficiale TEST',`<p>${bits.map(s=>esc(s)).join('</p><p>')}</p>${faultHtml}${messageHtml}${note}<p>Solo dati dimostrativi. Nessuna fattura reale inviata.</p>`);
   }catch(e){toast(e.message)}finally{if(page==='sistema_ts')renderSistemaTS()}
  };
  $('#ts-dry-run').onclick=async()=>{try{
