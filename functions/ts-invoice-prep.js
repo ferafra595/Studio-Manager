@@ -82,6 +82,21 @@ export async function tsInvoicePreparation({request,env},path){
   const match=path.match(/^\/api\/v1\/ts\/invoice-preparations\/([^/]+)$/);
   if(!match)return bad('Endpoint non disponibile',404);
   const invoiceId=decodeURIComponent(match[1]);if(invoiceId.length>100)return bad('ID non valido');
+  // Elimina la SOLA preparazione TS interna, mai trasmessa; fattura originale intatta.
+  if(request.method==='DELETE'){
+   const prep=await one(db,'SELECT id,status FROM sm_ts_invoice_preparations WHERE invoice_id=?',invoiceId);
+   if(!prep)return bad('Preparazione TS non trovata',404);
+   if(!['da_verificare','opposizione_registrata'].includes(prep.status))return bad('Preparazione già trasmessa o protetta',409);
+   const unsafe=await one(db,"SELECT id FROM sm_ts_invoice_prep_events WHERE preparation_id=? AND (lower(action) LIKE '%invi%' OR lower(action) LIKE '%trasm%' OR lower(action) LIKE '%accett%' OR lower(action) LIKE '%scart%') LIMIT 1",prep.id);
+   if(unsafe)return bad('Preparazione con storico di trasmissione: cancellazione bloccata',409);
+   const result=await db.batch([
+    db.prepare('DELETE FROM sm_ts_invoice_reviews WHERE preparation_id=?').bind(prep.id),
+    db.prepare('DELETE FROM sm_ts_invoice_prep_events WHERE preparation_id=?').bind(prep.id),
+    db.prepare("DELETE FROM sm_ts_invoice_preparations WHERE id=? AND status IN ('da_verificare','opposizione_registrata')").bind(prep.id)
+   ]);
+   if(!result[2]?.meta?.changes)return bad('Preparazione non eliminata',409);
+   return out({ok:true,deleted:true,invoice_unchanged:true});
+  }
   if(request.method==='GET'){
    const e=await eligible(db,invoiceId);
    if(e.error)return bad(e.error,e.code||422);

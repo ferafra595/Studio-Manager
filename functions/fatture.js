@@ -93,6 +93,41 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   const invoice=await one(db,'SELECT * FROM sm_invoices WHERE id=?',path.split('/').pop());if(!invoice)return fail('Documento non trovato',404);
   return respond({invoice,lines:await all(db,'SELECT position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents FROM sm_invoice_lines WHERE invoice_id=? ORDER BY position',invoice.id),payments:await all(db,'SELECT * FROM sm_invoice_payments WHERE invoice_id=? ORDER BY paid_on,created_at',invoice.id),events:await all(db,'SELECT action,detail,created_at FROM sm_invoice_events WHERE invoice_id=? ORDER BY created_at DESC',invoice.id)});
  }
+ // Modifica anagrafica/data/serie soltanto della bozza, mai dopo emissione.
+ if(method==='PUT'&&/^\/api\/v1\/billing\/invoices\/[^/]+$/.test(path)){
+  const invoiceId=path.split('/')[5],inv=await one(db,'SELECT * FROM sm_invoices WHERE id=?',invoiceId);
+  if(!inv)return fail('Fattura non trovata',404);
+  if(inv.status!=='bozza'||inv.sequence!==null||inv.issued_at!==null)return fail('Le fatture emesse non sono modificabili',409);
+  const b=await body(request),pid=s(b.patient_id),issueDate=s(b.issue_date),series=s(b.series).toUpperCase();
+  if(!pid||!validDate(issueDate)||!/^[A-Z0-9]{1,8}$/.test(series))return fail('Dati della bozza non validi',400);
+  if(!await one(db,'SELECT id FROM sm_patients WHERE id=?',pid))return fail('Paziente inesistente',404);
+  if(inv.appointment_id&&pid!==inv.patient_id)return fail('Fattura collegata a un appuntamento: paziente non modificabile',409);
+  const r=await db.prepare("UPDATE sm_invoices SET patient_id=?,issue_date=?,year=?,series=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='bozza' AND sequence IS NULL AND issued_at IS NULL").bind(pid,issueDate,Number(issueDate.slice(0,4)),series,invoiceId).run();
+  if(!r.meta?.changes)return fail('La bozza è stata modificata o emessa nel frattempo',409);
+  await event(db,invoiceId,'bozza_modificata','Dati intestazione aggiornati');
+  return respond({ok:true,status:'bozza'});
+ }
+ // Eliminazione definitiva di una bozza NON numerata; operazione protetta anche lato server.
+ if(method==='DELETE'&&/^\/api\/v1\/billing\/invoices\/[^/]+$/.test(path)){
+  const invoiceId=path.split('/')[5];
+  const inv=await one(db,'SELECT id,status,sequence,issued_at FROM sm_invoices WHERE id=?',invoiceId);
+  if(!inv)return fail('Fattura non trovata',404);
+  if(inv.status!=='bozza'||inv.sequence!==null||inv.issued_at!==null)return fail('Una fattura emessa non può essere eliminata',409);
+  const checks=await Promise.all([
+   one(db,'SELECT id FROM sm_invoice_payments WHERE invoice_id=? LIMIT 1',invoiceId),
+   one(db,'SELECT id FROM sm_ts_invoice_preparations WHERE invoice_id=? LIMIT 1',invoiceId),
+   one(db,'SELECT id FROM sm_invoices WHERE original_invoice_id=? LIMIT 1',invoiceId)
+  ]);
+  if(checks.some(Boolean))return fail('Bozza collegata a pagamenti, preparazioni TS o note di credito: eliminazione bloccata',409);
+  const draftGuard="SELECT 1 FROM sm_invoices WHERE id=? AND status='bozza' AND sequence IS NULL AND issued_at IS NULL";
+  const batch=await db.batch([
+   db.prepare(`DELETE FROM sm_invoice_lines WHERE invoice_id=? AND EXISTS (${draftGuard})`).bind(invoiceId,invoiceId),
+   db.prepare(`DELETE FROM sm_invoice_events WHERE invoice_id=? AND EXISTS (${draftGuard})`).bind(invoiceId,invoiceId),
+   db.prepare("DELETE FROM sm_invoices WHERE id=? AND status='bozza' AND sequence IS NULL AND issued_at IS NULL").bind(invoiceId)
+  ]);
+  if(!batch[2]?.meta?.changes)return fail('Bozza non eliminata: aggiornare il registro',409);
+  return respond({ok:true,deleted:true});
+ }
  if(method==='POST'&&path==='/api/v1/billing/invoices'){
   const b=await body(request),pid=s(b.patient_id),aid=s(b.appointment_id)||null,date=s(b.issue_date),series=s(b.series||'A').toUpperCase();
   if(!validDate(date)||!pid||!/^[A-Z0-9]{1,8}$/.test(series))return fail('Dati fattura incompleti o non validi');

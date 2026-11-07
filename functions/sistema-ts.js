@@ -76,7 +76,7 @@ export async function sistemaTS({request,env},path){
    return json({schema_ready:tables.length===2,mode:'preparazione',live_transmission_enabled:false,credentials_configured:!!(env.TS_USERNAME&&env.TS_PASSWORD&&env.TS_PINCODE),notice:'La presenza delle credenziali non abilita l’invio: verificare WSDL, autorizzazioni e certificati ufficiali.'});
   }
   if(request.method==='GET'&&path==='/api/v1/ts/documents'){
-   return json({items:await all(db,`SELECT d.id,d.document_number,d.document_date,d.payment_date,d.payment_method,d.total_cents,d.expense_type,d.opposition,d.status,d.protocol,d.last_error,d.created_at,p.first_name,p.last_name FROM sm_ts_documents d JOIN sm_patients p ON p.id=d.patient_id ORDER BY d.created_at DESC LIMIT 200`)});
+   return json({items:await all(db,`SELECT d.id,d.patient_id,d.document_number,d.document_date,d.payment_date,d.payment_method,d.total_cents,d.expense_type,d.opposition,d.status,d.protocol,d.last_error,d.created_at,p.first_name,p.last_name FROM sm_ts_documents d JOIN sm_patients p ON p.id=d.patient_id ORDER BY d.created_at DESC LIMIT 200`)});
   }
   if(request.method==='GET'&&/^\/api\/v1\/ts\/documents\/[^/]+\/events$/.test(path)){
    const id=path.split('/')[5];
@@ -93,6 +93,39 @@ export async function sistemaTS({request,env},path){
    const id=uid();await db.prepare(`INSERT INTO sm_ts_documents(id,patient_id,appointment_id,document_number,document_date,payment_date,payment_method,total_cents,expense_type,opposition,status) VALUES(?,?,?,?,?,?,?,?,?,?,'bozza')`).bind(id,patient_id,appointment_id,document_number,document_date,payment_date,payment_method,total_cents,expense_type,Number(!!b.opposition)).run();
    await db.prepare('INSERT INTO sm_ts_events(id,document_id,event_type) VALUES(?,?,?)').bind(uid(),id,'bozza_creata').run();
    return json({id,status:'bozza',sent:false},201);
+  }
+  // Modifica o cancellazione SOLO di bozze/preparazioni TS mai trasmesse.
+  const draftDoc=path.match(/^\/api\/v1\/ts\/documents\/([^/]+)$/);
+  if(draftDoc&&['PUT','DELETE'].includes(request.method)){
+   const docId=decodeURIComponent(draftDoc[1]);
+   if(docId.length>100)return err('Identificativo documento non valido');
+   const old=await one(db,'SELECT * FROM sm_ts_documents WHERE id=?',docId);
+   if(!old)return err('Documento TS non trovato',404);
+   if(!['bozza','da_verificare','pronto_test'].includes(old.status)||old.protocol||old.last_error&&/trasmess|inviat|accettat/i.test(old.last_error))
+    return err('Documento TS già trasmesso o con stato protetto: modifica/eliminazione vietata',409);
+   // Lo storico di un invio non va mai eliminato, anche se lo stato locale fosse incoerente.
+   const sent=await one(db,"SELECT id FROM sm_ts_events WHERE document_id=? AND (lower(event_type) LIKE '%invi%' OR lower(event_type) LIKE '%trasm%' OR lower(event_type) LIKE '%accett%' OR lower(event_type) LIKE '%scart%') LIMIT 1",docId);
+   if(sent)return err('Documento con storico di trasmissione: operazione vietata',409);
+   if(request.method==='DELETE'){
+    const guard="SELECT 1 FROM sm_ts_documents WHERE id=? AND status IN ('bozza','da_verificare','pronto_test') AND protocol IS NULL";
+    const result=await db.batch([
+     db.prepare(`DELETE FROM sm_ts_events WHERE document_id=? AND EXISTS (${guard})`).bind(docId,docId),
+     db.prepare("DELETE FROM sm_ts_documents WHERE id=? AND status IN ('bozza','da_verificare','pronto_test') AND protocol IS NULL").bind(docId)
+    ]);
+    if(!result[1]?.meta?.changes)return err('Documento non eliminato',409);
+    return json({ok:true,deleted:true});
+   }
+   if(Number(request.headers.get('content-length')||0)>8192)return err('Richiesta troppo grande',413);
+   const b=await request.json();
+   const patient_id=clean(b.patient_id),document_number=clean(b.document_number),document_date=clean(b.document_date),payment_date=clean(b.payment_date),payment_method=clean(b.payment_method),expense_type=clean(b.expense_type).toUpperCase(),total_cents=Number(b.total_cents);
+   if(!patient_id||!document_number||document_number.length>80||!date(document_date)||!date(payment_date)||!['contanti','tracciabile','altro'].includes(payment_method)||!Number.isSafeInteger(total_cents)||total_cents<=0||!/^[A-Z0-9]{1,5}$/.test(expense_type)||![true,false,0,1].includes(b.opposition))return err('Dati documento incompleti o non validi');
+   if(!await one(db,'SELECT id FROM sm_patients WHERE id=?',patient_id))return err('Paziente inesistente',404);
+   if(old.appointment_id&&patient_id!==old.patient_id)return err('Documento collegato a un appuntamento: il paziente non può essere cambiato',409);
+   // Nessuna modifica dell'appuntamento collegato: la bozza TS resta separata.
+   const update=await db.prepare("UPDATE sm_ts_documents SET patient_id=?,document_number=?,document_date=?,payment_date=?,payment_method=?,total_cents=?,expense_type=?,opposition=?,status='bozza',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('bozza','da_verificare','pronto_test') AND protocol IS NULL").bind(patient_id,document_number,document_date,payment_date,payment_method,total_cents,expense_type,Number(!!b.opposition),docId).run();
+   if(!update.meta?.changes)return err('Documento modificato da un altro operatore',409);
+   await db.prepare('INSERT INTO sm_ts_events(id,document_id,event_type) VALUES(?,?,?)').bind(uid(),docId,'bozza_modificata').run();
+   return json({ok:true,status:'bozza',transmitted:false});
   }
   if(request.method==='POST'&&/^\/api\/v1\/ts\/documents\/[^/]+\/validate$/.test(path)){
    const id=path.split('/')[5];const d=await one(db,'SELECT d.*,p.cf FROM sm_ts_documents d JOIN sm_patients p ON p.id=d.patient_id WHERE d.id=?',id);
