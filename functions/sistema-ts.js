@@ -21,11 +21,11 @@ export async function sistemaTS({request,env},path){
     const contentType=response.headers.get('content-type')||'';
     // Non leggere né riportare il corpo della risposta: può contenere dettagli del server.
     return json({environment:'TEST',endpoint,transport_reachable:response.status!==526,tls_verified:response.status!==526,http_status:response.status,
-      content_type:contentType.slice(0,100),wsdl_available:response.ok&&/xml/i.test(contentType),
+      content_type:contentType.slice(0,100),wsdl_available:false,
       diagnosis:response.status===526?'TLS_CERTIFICATE_VALIDATION_FAILED':response.ok?'HTTP_OK':'HTTP_ERROR',
       next_step:response.status===526?'Verificare catena di fiducia TLS con il gestore del servizio TS; Cloudflare Workers non consente di disabilitare la verifica TLS o impostare una CA personalizzata per fetch. Non inviare credenziali.':null,
       authenticated:false,transmission_tested:false,
-      notice:'Diagnostica di rete soltanto. Nessuna credenziale o fattura è stata inviata.'});
+      notice:'La verifica GET ?wsdl non è una prova valida di disponibilità SOAP. Nessuna credenziale o fattura inviata.'});
    }catch(e){
     return json({environment:'TEST',endpoint,transport_reachable:false,
       reason:e?.name==='TimeoutError'?'timeout':'connessione_non_riuscita',
@@ -39,6 +39,12 @@ export async function sistemaTS({request,env},path){
   }
   if(request.method==='GET'&&path==='/api/v1/ts/documents'){
    return json({items:await all(db,`SELECT d.id,d.document_number,d.document_date,d.payment_date,d.payment_method,d.total_cents,d.expense_type,d.opposition,d.status,d.protocol,d.last_error,d.created_at,p.first_name,p.last_name FROM sm_ts_documents d JOIN sm_patients p ON p.id=d.patient_id ORDER BY d.created_at DESC LIMIT 200`)});
+  }
+  if(request.method==='GET'&&/^\/api\/v1\/ts\/documents\/[^/]+\/events$/.test(path)){
+   const id=path.split('/')[5];
+   if(!await one(db,'SELECT id FROM sm_ts_documents WHERE id=?',id))return err('Documento non trovato',404);
+   const items=await all(db,'SELECT id,event_type,outcome,created_at FROM sm_ts_events WHERE document_id=? ORDER BY created_at DESC LIMIT 100',id);
+   return json({items});
   }
   if(request.method==='POST'&&path==='/api/v1/ts/documents'){
    if(Number(request.headers.get('content-length')||0)>8192)return err('Richiesta troppo grande',413);
