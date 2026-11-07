@@ -58,11 +58,12 @@ async function tsInvoicePreparations(){
  try{
   const response=await api('v1/ts/invoice-preparations');const items=response.items||[];
   if(!items.length){target.innerHTML='<p>Non risultano fatture emesse.</p>';return}
-  target.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Fattura</th><th>Paziente</th><th>Totale</th><th>Pagamenti</th><th>Preparazione TS</th><th></th></tr></thead><tbody>${items.map(i=>{
+  target.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Fattura</th><th>Paziente</th><th>Totale</th><th>Pagamenti</th><th>Preparazione TS</th><th>Revisione</th><th></th></tr></thead><tbody>${items.map(i=>{
    const full=i.paid_cents===i.total_cents&&i.payment_count===1;
-   return `<tr><td>${esc(i.series+'/'+i.sequence+'/'+i.year)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)} (${i.payment_count})</td><td>${esc(i.ts_status||'Non preparata')}</td><td>${!i.preparation_id&&full?`<button data-ts-prepare="${esc(i.id)}">Prepara</button>`:'—'}</td></tr>`
+   return `<tr><td>${esc(i.series+'/'+i.sequence+'/'+i.year)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)} (${i.payment_count})</td><td>${esc(i.ts_status||'Non preparata')}</td><td>${i.preparation_id?(i.opposition?'Opposizione':i.reviewed_at?'Registrata (ricontrollare)':'Da verificare'):'—'}</td><td>${i.preparation_id&&!i.opposition?`<button data-ts-review=\"${esc(i.id)}\">Verifica</button>`:!i.preparation_id&&full?`<button data-ts-prepare="${esc(i.id)}">Prepara</button>`:'—'}</td></tr>`
   }).join('')}</tbody></table></div><p class="notice">Nessun invio reale: classificazione manuale e verifica fiscale obbligatoria. Fatture con pagamenti parziali o multipli non ancora supportate.</p>`;
   $$('[data-ts-prepare]').forEach(button=>button.onclick=()=>tsPrepareInvoice(button.dataset.tsPrepare));
+  $$('[data-ts-review]').forEach(button=>button.onclick=()=>tsReviewInvoice(button.dataset.tsReview));
  }catch(e){target.textContent=e.message}
 }
 async function tsPrepareInvoice(invoiceId){
@@ -79,5 +80,28 @@ async function tsPrepareInvoice(invoiceId){
    await api('v1/ts/invoice-preparations/'+encodeURIComponent(invoiceId),'POST',{opposition:f.opposition==='si',review_confirmed:true,types});
    setTimeout(()=>{if(page==='sistema_ts')renderSistemaTS()},0);
   }));
+ }catch(e){toast(e.message)}
+}
+
+async function tsReviewInvoice(invoiceId){
+ try{
+  const r=await api('v1/ts/invoice-preparations/'+encodeURIComponent(invoiceId)+'/review');
+  const problems=(r.problems||[]).map(x=>'<li>'+esc(x)+'</li>').join('');
+  if(r.opposition){modal('Opposizione del paziente','<p>Opposizione registrata. Nessun invio possibile da questo modulo.</p>');return}
+  if(problems){modal('Revisione bloccata','<ul>'+problems+'</ul><p>Correggere la situazione amministrativa prima di procedere. Nessun dato è stato trasmesso.</p>');return}
+  if(r.reviewed){modal('Revisione TS','<p>La verifica manuale è registrata e i dati risultano invariati.</p><p><b>Non è stata effettuata alcuna trasmissione.</b></p>');return}
+  modal('Revisione documentale TS',form(
+   '<p>Questa revisione non certifica la conformità fiscale e non abilita invii automatici.</p>'+
+   '<label><input type="checkbox" name="payment_checked" value="1" required> Ho controllato incasso, data e metodo di pagamento.</label>'+
+   '<label><input type="checkbox" name="classification_checked" value="1" required> Ho verificato personalmente la corretta tipologia TS di ogni prestazione.</label>'+
+   '<label><input type="checkbox" name="issuer_checked" value="1" required> Ho verificato emittente, paziente e assenza di note di credito.</label>',
+   'Registra verifica'),()=>bindForm(async f=>{
+    if(f.payment_checked!=='1'||f.classification_checked!=='1'||f.issuer_checked!=='1')throw Error('Completa i tre controlli');
+    const response=await api('v1/ts/invoice-preparations/'+encodeURIComponent(invoiceId)+'/review','POST',{
+      confirmation:'CONFERMO VERIFICA FISCALE TS',payment_checked:true,classification_checked:true,issuer_checked:true
+    });
+    toast(response.reviewed?'Revisione registrata. Nessun invio effettuato.':'Revisione non riuscita');
+    setTimeout(()=>{if(page==='sistema_ts')renderSistemaTS()},0);
+   }));
  }catch(e){toast(e.message)}
 }
