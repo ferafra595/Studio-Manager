@@ -15,6 +15,7 @@ function calculate(b){const qty=Number(b.quantity),unit=Number(b.unit_cents),vat
  if(!Number.isSafeInteger(total)||total<=0||total>100000000)throw Error('Totale non valido');
  return {qty,unit,vat,stamp,taxable,vatCents,total};}
 // Controlli formali: non certificano l'esistenza o la titolarità della partita IVA.
+const allowedVatNatures=new Set(['N1','N2.1','N2.2','N3.1','N3.2','N3.3','N3.4','N3.5','N3.6','N4','N5','N6.1','N6.2','N6.3','N6.4','N6.5','N6.6','N6.7','N6.8','N6.9','N7']);
 const fiscalRegimes=new Set(['RF01','RF02','RF04','RF05','RF06','RF07','RF08','RF09','RF10','RF11','RF12','RF13','RF14','RF15','RF16','RF17','RF18','RF19']);
 function validVat(v){if(!/^\d{11}$/.test(v))return false;let sum=0;for(let i=0;i<10;i++){let d=Number(v[i]);if(i%2===1){d*=2;if(d>9)d-=9;}sum+=d;}return (10-sum%10)%10===Number(v[10]);}
 function validItalianTaxCode(v){if(!v)return true;const cf=v.toUpperCase();if(/^\d{11}$/.test(cf))return validVat(cf);if(!/^[A-Z0-9]{16}$/.test(cf))return false;
@@ -38,7 +39,7 @@ function checkLines(raw){
  if(!Array.isArray(raw)||raw.length<1||raw.length>30)throw Error('Inserisci da 1 a 30 prestazioni');
  return raw.map((x,i)=>{
   const description=s(x.description),quantity=Number(x.quantity),unit=Number(x.unit_cents),rate=Number(x.vat_rate_bp),nature=s(x.vat_nature).toUpperCase();
-  if(!description||description.length>400||!Number.isSafeInteger(quantity)||quantity<1||quantity>10000||!money(unit)||!Number.isSafeInteger(rate)||rate<0||rate>10000||!/^([A-Z][0-9](?:\.[0-9]+)?)?$/.test(nature)||nature.length>10)throw Error('Prestazione '+(i+1)+' non valida');
+  if(!description||description.length>400||!Number.isSafeInteger(quantity)||quantity<1||quantity>10000||!money(unit)||!Number.isSafeInteger(rate)||rate<0||rate>10000||(nature&&!allowedVatNatures.has(nature)))throw Error('Prestazione '+(i+1)+' non valida: controlla descrizione, quantità, prezzo, aliquota e codice Natura IVA');
   if(rate>0&&nature)throw Error('Non indicare una natura di esenzione con IVA diversa da zero');
   if(rate===0&&!nature)throw Error('Indica la natura IVA della prestazione senza IVA (da verificare fiscalmente)');
   const taxable=quantity*unit,vat=Math.round(taxable*rate/10000);
@@ -96,7 +97,12 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   const b=await body(request),pid=s(b.patient_id),aid=s(b.appointment_id)||null,date=s(b.issue_date),series=s(b.series||'A').toUpperCase();
   if(!validDate(date)||!pid||!/^[A-Z0-9]{1,8}$/.test(series))return fail('Dati fattura incompleti o non validi');
   const p=await one(db,'SELECT id FROM sm_patients WHERE id=?',pid);if(!p)return fail('Paziente inesistente',404);
-  if(aid&&!await one(db,'SELECT id FROM sm_appointments WHERE id=? AND patient_id=?',aid,pid))return fail('Appuntamento non appartenente al paziente');
+  if(aid){const apt=await one(db,'SELECT id,status FROM sm_appointments WHERE id=? AND patient_id=?',aid,pid);
+   if(!apt)return fail('Appuntamento non appartenente al paziente');
+   if(apt.status!=='concluso')return fail('Segna prima la prestazione come Effettuata',409);
+   const prior=await one(db,"SELECT id,status FROM sm_invoices WHERE appointment_id=? AND kind='fattura'",aid);
+   if(prior)return fail('Appuntamento già collegato a una fattura ('+prior.status+'). Apri il registro fatture.',409);
+  }
   const lines=checkLines(Array.isArray(b.lines)?b.lines:[{description:b.description,quantity:b.quantity,unit_cents:b.unit_cents,vat_rate_bp:b.vat_rate_bp,vat_nature:b.vat_nature}]);
   const stamp=Number(b.stamp_cents);if(![0,200].includes(stamp))return fail('Bollo non valido');
   const taxable=lines.reduce((sum,l)=>sum+l.taxable,0),vat=lines.reduce((sum,l)=>sum+l.vat,0),total=taxable+vat+stamp;
