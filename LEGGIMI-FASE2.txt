@@ -1,0 +1,20 @@
+STUDIO MANAGER — SISTEMA TS / MODULO SOAP OFFLINE
+
+Contenuto:
+- ts_soap.py: genera XML SOAP 1.1 per inserimento, variazione, rimborso, cancellazione; interpreta gli esiti.
+- test_ts_soap.py: test automatici locali.
+- DocumentoSpesa730pSchema.xsd: schema ufficiale tratto dal kit 20240214, per validazioni locali.
+
+INSTALLAZIONE: copia i 3 file nella cartella del progetto Python su GitHub/Render, SENZA sostituire app.py.
+Il servizio /probe continuerà a funzionare come prima; questi file non attivano nuove API pubbliche.
+
+TEST LOCALE: python -m unittest -v test_ts_soap
+
+STATO REALE:
+- Generazione dei 4 messaggi XML verificata rispetto allo XSD 20240214 con lxml in ambiente locale.
+- Non è stata implementata la cifratura TS del PINCODE e del CF, né l'autenticazione e la trasmissione reale.
+- Il codice rifiuta PINCODE non marcato come cifrato; il marcatore ENC: è SOLO una protezione preliminare, NON prova crittografica.
+- Non inviare XML di esempio al TS: i dati di test sono fittizi e non sono cifrati realmente.
+- Necessario aggiornare e verificare le specifiche TS per il 2026, incluso regime fiscale, categorie di spesa e identificativo struttura.
+- Non utilizzare Render Free per dati sanitari reali o credenziali TS.
+- Prossimi passi: cifratura ufficiale, validazione fiscale completa, autenticazione protetta, TLS CA Sogei, test end-to-end e collegamento Cloudflare.
