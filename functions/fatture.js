@@ -64,11 +64,12 @@ async function invoiceLinesApi(db,request,path){
  if(![0,200].includes(stamp))return fail('Bollo non valido');
  const taxable=lines.reduce((a,l)=>a+l.taxable,0),vat=lines.reduce((a,l)=>a+l.vat,0),total=taxable+vat+stamp;
  if(!Number.isSafeInteger(total)||total<=0||total>100000000)return fail('Totale non valido');
- const statements=[db.prepare('DELETE FROM sm_invoice_lines WHERE invoice_id=?').bind(invoiceId)];
- lines.forEach((l,i)=>statements.push(db.prepare('INSERT INTO sm_invoice_lines(id,invoice_id,position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(id(),invoiceId,i+1,l.description,l.quantity,l.unit,l.rate,l.nature,l.taxable,l.vat)));
+ const statements=[db.prepare('DELETE FROM sm_invoice_lines WHERE invoice_id=? AND EXISTS (SELECT 1 FROM sm_invoices WHERE id=? AND status=\'bozza\')').bind(invoiceId,invoiceId)];
+ lines.forEach((l,i)=>statements.push(db.prepare('INSERT INTO sm_invoice_lines(id,invoice_id,position,description,quantity,unit_cents,vat_rate_bp,vat_nature,taxable_cents,vat_cents) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM sm_invoices WHERE id=? AND status=\'bozza\')').bind(id(),invoiceId,i+1,l.description,l.quantity,l.unit,l.rate,l.nature,l.taxable,l.vat,invoiceId)));
  statements.push(db.prepare(`UPDATE sm_invoices SET description=?,quantity=?,unit_cents=?,vat_rate_bp=?,vat_nature=?,stamp_cents=?,taxable_cents=?,vat_cents=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='bozza'`).bind(lines[0].description,lines[0].quantity,lines[0].unit,lines[0].rate,lines[0].nature,stamp,taxable,vat,total,invoiceId));
  // D1 batch esegue in transazione: righe e totale restano coerenti.
- await db.batch(statements);
+ const changes=await db.batch(statements);
+ if(!changes.at(-1)?.meta?.changes)return fail('Documento già emesso',409);
  await event(db,invoiceId,'righe_aggiornate',`${lines.length} prestazioni`);
  return respond({ok:true,total_cents:total});
 }
@@ -86,8 +87,19 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   await db.prepare(`UPDATE sm_billing_settings SET ${fields.map(k=>k+'=?').join(',')},updated_at=CURRENT_TIMESTAMP WHERE id=1`).bind(...vals).run();return respond({ok:true});
  }
  if(method==='GET'&&path==='/api/v1/billing/invoices'){
-  const rows=await all(db,`SELECT i.id,i.patient_id,i.appointment_id,i.issue_date,i.year,i.series,i.sequence,i.status,i.kind,i.description,i.total_cents,i.created_at,p.first_name,p.last_name,COALESCE((SELECT SUM(amount_cents) FROM sm_invoice_payments m WHERE m.invoice_id=i.id),0) AS paid_cents FROM sm_invoices i JOIN sm_patients p ON p.id=i.patient_id ORDER BY i.created_at DESC LIMIT 300`);
-  return respond({items:rows});
+  const q=new URL(request.url).searchParams, search=s(q.get('q')).slice(0,100), status=s(q.get('status')), from=s(q.get('from')), to=s(q.get('to'));
+  const page=Number(q.get('page')||1), size=50;
+  if(!Number.isSafeInteger(page)||page<1||page>100000|| (from&&!validDate(from))||(to&&!validDate(to))||(from&&to&&from>to)||!['','bozza','emessa','da_incassare','saldata'].includes(status))return fail('Filtri non validi');
+  const conditions=[], params=[];
+  if(search){conditions.push("(instr(lower(p.first_name||' '||p.last_name),lower(?))>0 OR instr(lower(p.last_name||' '||p.first_name),lower(?))>0 OR instr(lower(i.series||'/'||i.sequence||'/'||i.year),lower(?))>0)");params.push(search,search,search);}
+  if(from){conditions.push('i.issue_date>=?');params.push(from)} if(to){conditions.push('i.issue_date<=?');params.push(to)}
+  if(['bozza','emessa'].includes(status)){conditions.push('i.status=?');params.push(status)}
+  if(status==='da_incassare')conditions.push("i.status='emessa' AND i.kind='fattura' AND i.total_cents>COALESCE(m.paid_cents,0)");
+  if(status==='saldata')conditions.push("i.status='emessa' AND i.kind='fattura' AND i.total_cents=COALESCE(m.paid_cents,0)");
+  const base=`FROM sm_invoices i JOIN sm_patients p ON p.id=i.patient_id LEFT JOIN (SELECT invoice_id,SUM(amount_cents) paid_cents FROM sm_invoice_payments GROUP BY invoice_id) m ON m.invoice_id=i.id ${conditions.length?'WHERE '+conditions.join(' AND '):''}`;
+  const summary=await one(db,`SELECT COUNT(*) count,COALESCE(SUM(CASE WHEN i.status='emessa' THEN CASE WHEN i.kind='nota_credito' THEN -i.total_cents ELSE i.total_cents END ELSE 0 END),0) billed,COALESCE(SUM(CASE WHEN i.status='emessa' AND i.kind='fattura' THEN COALESCE(m.paid_cents,0) ELSE 0 END),0) paid,COALESCE(SUM(CASE WHEN i.status='emessa' AND i.kind='fattura' THEN i.total_cents-COALESCE(m.paid_cents,0) ELSE 0 END),0) gross_residual ${base}`,...params);
+  const rows=await all(db,`SELECT i.id,i.patient_id,i.appointment_id,i.issue_date,i.year,i.series,i.sequence,i.status,i.kind,i.description,i.total_cents,i.created_at,p.first_name,p.last_name,COALESCE(m.paid_cents,0) AS paid_cents ${base} ORDER BY i.issue_date DESC,i.created_at DESC,i.id DESC LIMIT ? OFFSET ?`,...params,size,(page-1)*size);
+  return respond({items:rows,summary,page,page_size:size});
  }
  if(method==='GET'&&/^\/api\/v1\/billing\/invoices\/[^/]+$/.test(path)){
   const invoice=await one(db,'SELECT * FROM sm_invoices WHERE id=?',path.split('/').pop());if(!invoice)return fail('Documento non trovato',404);
@@ -155,7 +167,7 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   const issuer=await one(db,'SELECT * FROM sm_billing_settings WHERE id=1');
   try{checkIssuer(issuer||{});}catch(e){return fail('Dati fiscali dello studio da correggere: '+e.message);}
   const customer=await one(db,'SELECT first_name,last_name,cf,address FROM sm_patients WHERE id=?',inv.patient_id);
-  if(!customer?.first_name||!customer?.last_name||!customer.cf)return fail('Completa nome, cognome e codice fiscale del paziente');
+  if(!customer?.first_name||!customer?.last_name||!customer.cf||!validItalianTaxCode(customer.cf))return fail('Completa nome, cognome e codice fiscale valido del paziente');
   // L'emissione assegna il progressivo con una sola UPDATE SQL; UNIQUE(year,series,sequence)
   // impedisce duplicazioni anche in caso di richieste concorrenti. In caso di conflitto, ritentare.
   const result=await db.prepare(`UPDATE sm_invoices SET sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM sm_invoices WHERE year=? AND series=? AND status='emessa'),status='emessa',issued_at=CURRENT_TIMESTAMP,issuer_snapshot=?,customer_snapshot=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='bozza' RETURNING sequence`).bind(inv.year,inv.series,JSON.stringify(issuer),JSON.stringify(customer),invoiceId).first();
