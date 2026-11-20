@@ -170,19 +170,36 @@ export async function fatture({request,env},path){const db=env.DB;if(!db)return 
   if(!customer?.first_name||!customer?.last_name||!customer.cf||!validItalianTaxCode(customer.cf))return fail('Completa nome, cognome e codice fiscale valido del paziente');
   // L'emissione assegna il progressivo con una sola UPDATE SQL; UNIQUE(year,series,sequence)
   // impedisce duplicazioni anche in caso di richieste concorrenti. In caso di conflitto, ritentare.
-  const result=await db.prepare(`UPDATE sm_invoices SET sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM sm_invoices WHERE year=? AND series=? AND status='emessa'),status='emessa',issued_at=CURRENT_TIMESTAMP,issuer_snapshot=?,customer_snapshot=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='bozza' RETURNING sequence`).bind(inv.year,inv.series,JSON.stringify(issuer),JSON.stringify(customer),invoiceId).first();
+  const result=await db.prepare(`UPDATE sm_invoices SET sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM sm_invoices WHERE year=? AND series=? AND status='emessa'),status='emessa',issued_at=CURRENT_TIMESTAMP,issuer_snapshot=?,customer_snapshot=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='bozza' AND patient_id=? AND issue_date=? AND year=? AND series=? AND total_cents=? RETURNING sequence`).bind(inv.year,inv.series,JSON.stringify(issuer),JSON.stringify(customer),invoiceId,inv.patient_id,inv.issue_date,inv.year,inv.series,inv.total_cents).first();
   if(!result)return fail('Documento già emesso o modificato',409);
   await event(db,invoiceId,'emessa',inv.series+'/'+result.sequence+'/'+inv.year);return respond({ok:true,number:`${inv.series}/${result.sequence}/${inv.year}`});
  }
  if(method==='POST'&&/^\/api\/v1\/billing\/invoices\/[^/]+\/payments$/.test(path)){
-  const invoiceId=path.split('/')[5],b=await body(request),amount=Number(b.amount_cents),paidOn=s(b.paid_on),method=s(b.method),reference=s(b.reference);
-  if(!Number.isSafeInteger(amount)||amount<=0||!validDate(paidOn)||!['contanti','carta','bonifico','assegno','altro'].includes(method)||reference.length>160)return fail('Pagamento non valido');
-  const inv=await one(db,'SELECT id,total_cents,status,kind FROM sm_invoices WHERE id=?',invoiceId);if(!inv)return fail('Fattura non trovata',404);
+  const invoiceId=path.split('/')[5],b=await body(request),amount=Number(b.amount_cents),paidOn=s(b.paid_on),paymentMethod=s(b.method),reference=s(b.reference),paymentId=s(b.request_id);
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(paymentId))return fail('Identificativo operazione mancante: aggiorna la pagina');
+  const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Rome',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  if(!Number.isSafeInteger(amount)||amount<=0||!money(amount)||!validDate(paidOn)||paidOn>today||!['contanti','carta','bonifico','assegno','altro'].includes(paymentMethod)||reference.length>160)return fail('Pagamento non valido: verifica importo, data non futura e metodo');
+  const matches=p=>p&&p.invoice_id===invoiceId&&p.paid_on===paidOn&&p.amount_cents===amount&&p.method===paymentMethod&&p.reference===reference;
+  const previous=await one(db,'SELECT * FROM sm_invoice_payments WHERE id=?',paymentId);
+  if(previous)return matches(previous)?respond({id:paymentId,replayed:true}):fail('Identificativo già utilizzato per un pagamento diverso',409);
+  const inv=await one(db,'SELECT id,total_cents,status,kind,issue_date FROM sm_invoices WHERE id=?',invoiceId);if(!inv)return fail('Fattura non trovata',404);
   if(inv.status!=='emessa'||inv.kind!=='fattura')return fail('I pagamenti si registrano soltanto su fatture emesse');
-  // INSERT condizionato evita sovrapagamenti concorrenti: la query è un'unica istruzione D1.
-  const paymentId=id();const r=await db.prepare(`INSERT INTO sm_invoice_payments(id,invoice_id,paid_on,amount_cents,method,reference) SELECT ?,?,?,?,?,? WHERE (SELECT total_cents-COALESCE(SUM(amount_cents),0) FROM sm_invoices i LEFT JOIN sm_invoice_payments p ON p.invoice_id=i.id WHERE i.id=? GROUP BY i.id)>=?`).bind(paymentId,invoiceId,paidOn,amount,method,reference,invoiceId,amount).run();
-  if(!r.meta?.changes)return fail('Importo superiore al residuo da incassare',409);
-  await event(db,invoiceId,'pagamento_registrato',`${amount} centesimi; ${method}`);return respond({id:paymentId},201);
+  // Gli anticipi anteriori alla data fattura restano registrabili: il TS li tratterà separatamente.
+  // Non modificare incassi di fatture già rettificate senza una riconciliazione specifica.
+  const insert=db.prepare(`INSERT INTO sm_invoice_payments(id,invoice_id,paid_on,amount_cents,method,reference)
+   SELECT ?,?,?,?,?,? FROM sm_invoices i WHERE i.id=? AND i.status='emessa' AND i.kind='fattura'
+   AND NOT EXISTS(SELECT 1 FROM sm_invoices n WHERE n.original_invoice_id=i.id AND n.status='emessa')
+   AND i.total_cents-COALESCE((SELECT SUM(p.amount_cents) FROM sm_invoice_payments p WHERE p.invoice_id=i.id),0)>=?
+   ON CONFLICT(id) DO NOTHING`).bind(paymentId,invoiceId,paidOn,amount,paymentMethod,reference,invoiceId,amount);
+  // L'evento usa lo stesso UUID in una tabella distinta e viene scritto nella stessa transazione.
+  const audit=db.prepare(`INSERT INTO sm_invoice_events(id,invoice_id,action,detail)
+   SELECT ?,?,'pagamento_registrato',? FROM sm_invoice_payments WHERE id=? AND invoice_id=? AND paid_on=? AND amount_cents=? AND method=? AND reference=?
+   ON CONFLICT(id) DO NOTHING`).bind(paymentId,invoiceId,`${amount} centesimi; ${paymentMethod}`,paymentId,invoiceId,paidOn,amount,paymentMethod,reference);
+  const results=await db.batch([insert,audit]);
+  if(results[0]?.meta?.changes)return respond({id:paymentId},201);
+  const saved=await one(db,'SELECT * FROM sm_invoice_payments WHERE id=?',paymentId);
+  if(saved)return matches(saved)?respond({id:paymentId,replayed:true}):fail('Identificativo già utilizzato per un pagamento diverso',409);
+  return fail('Importo superiore al residuo oppure fattura rettificata. Aggiorna il documento.',409);
  }
  return fail('Endpoint fatturazione inesistente',404);
  }catch(e){const msg=String(e?.message||e);if(/no such table: sm_invoice_lines/i.test(msg))return fail('Eseguire la migrazione 0006_righe_fattura.sql',503);if(/no such table/i.test(msg))return fail('Eseguire la migrazione 0005_fatturazione.sql',503);if(/UNIQUE constraint failed/i.test(msg))return fail('Documento o progressivo già presente. Aggiorna e riprova.',409);if(/FOREIGN KEY constraint failed/i.test(msg))return fail('Elemento collegato non valido',409);if(/Richiesta troppo grande|prestazioni|Prestazione|natura IVA|Bollo non valido|Importo prestazione|non validi|Totale non valido|Partita IVA|Codice fiscale|CAP:|Provincia:|regime fiscale|PEC|destinatario|Compila denominazione|lunghezza massima/.test(msg))return fail(msg,400);return fail('Operazione di fatturazione non riuscita',500)}
