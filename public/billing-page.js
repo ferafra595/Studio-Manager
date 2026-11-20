@@ -1,13 +1,21 @@
 // Gestione fatture in sviluppo: nessuna trasmissione fiscale, nessun PDF fiscale certificato.
+const billingFilters={q:'',status:'',from:'',to:'',page:1};
 async function renderBilling(){
- const main=$('#main');main.innerHTML=`<div class="top"><div><h2>Fatturazione dello studio</h2><p class="sub">Unico emittente · emissione e registro. Trasmissioni TS e SdI solo successive, mai automatiche.</p></div><div class="row"><button id="bill-settings">Dati fiscali studio</button><button class="primary" id="bill-new">+ Nuova fattura</button></div></div><section class="card"><div id="bill-status">Verifica database…</div></section><section class="card"><h2>Registro fatture</h2><div id="bill-list">Caricamento…</div></section>`;
+ const main=$('#main');main.innerHTML=`<div class="top"><div><h2>Fatturazione dello studio</h2><p class="sub">Unico emittente · emissione e registro. Trasmissioni TS e SdI solo successive, mai automatiche.</p></div><div class="row"><button id="bill-settings">Dati fiscali studio</button><button class="primary" id="bill-new">+ Nuova fattura</button></div></div><section class="card"><div id="bill-status">Verifica database…</div></section><section class="card"><h2>Registro fatture</h2><form id="bill-filter" class="row" style="flex-wrap:wrap">${field('Cerca paziente o numero','q',billingFilters.q)}${select('Stato','status',[['','Tutti'],['bozza','Bozze'],['emessa','Emesse'],['da_incassare','Da incassare'],['saldata','Saldate']],billingFilters.status)}${field('Dal','from',billingFilters.from,'date')}${field('Al','to',billingFilters.to,'date')}<button type="submit">Cerca</button><button type="button" id="bill-reset">Azzera</button></form><div id="bill-summary"></div><div id="bill-list">Caricamento…</div><div class="row" id="bill-pages"></div></section>`;
  $('#bill-new').onclick=billingNew;$('#bill-settings').onclick=billingSettings;
- try{const [status,data]=await Promise.all([api('v1/billing/status'),api('v1/billing/invoices')]);if(page!=='fatture')return;
- $('#bill-status').textContent=status.ready?'Archivio disponibile. Invio TS separato e manuale; XML SdI non ancora implementato.':'Database fatture non pronto: esegui migrations/0005_fatturazione.sql in Cloudflare D1.';
- const items=data.items||[];
- $('#bill-list').innerHTML=items.length?`<div class="table-wrap"><table><thead><tr><th>Numero</th><th>Data</th><th>Paziente</th><th>Totale</th><th>Incassato</th><th>Stato</th><th></th></tr></thead><tbody>${items.map(i=>`<tr><td>${i.sequence?esc(i.series+'/'+i.sequence+'/'+i.year):'Bozza'}</td><td>${esc(i.issue_date)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)}</td><td>${esc(i.status)}</td><td><button data-bill-open="${esc(i.id)}">Dettagli / azioni</button></td></tr>`).join('')}</tbody></table></div>`:'<p>Nessuna fattura registrata.</p>';
+ $('#bill-filter').onsubmit=e=>{e.preventDefault();Object.assign(billingFilters,Object.fromEntries(new FormData(e.currentTarget)),{page:1});renderBilling()};
+ $('#bill-reset').onclick=()=>{Object.assign(billingFilters,{q:'',status:'',from:'',to:'',page:1});renderBilling()};
+ const list=$('#bill-list');
+ try{const [status,data]=await Promise.all([api('v1/billing/status'),api('v1/billing/invoices?'+new URLSearchParams(billingFilters))]);if(page!=='fatture'||list!==$('#bill-list'))return;
+ $('#bill-status').textContent=status.ready?'Archivio disponibile. Invio TS separato e manuale; XML SdI non ancora implementato.':'Database fatture non pronto.';
+ const items=data.items||[],summary=data.summary; if(!summary)throw Error('Aggiornare anche il backend fatture');
+ const pages=Math.max(1,Math.ceil(summary.count/data.page_size));if(billingFilters.page>pages){billingFilters.page=pages;return renderBilling()}
+ $('#bill-summary').innerHTML=`<p><strong>${summary.count} documenti</strong> · Emesso netto note di credito: <strong>${euro(summary.billed)}</strong> · Incassi registrati: <strong>${euro(summary.paid)}</strong> · Residuo lordo (prima delle rettifiche): <strong>${euro(summary.gross_residual)}</strong></p>`;
+ list.innerHTML=items.length?`<div class="table-wrap"><table><thead><tr><th>Numero</th><th>Data</th><th>Paziente</th><th>Totale</th><th>Incassato</th><th>Stato</th><th></th></tr></thead><tbody>${items.map(i=>`<tr><td>${i.sequence?esc(i.series+'/'+i.sequence+'/'+i.year):'Bozza'}</td><td>${esc(i.issue_date)}</td><td>${esc(i.last_name)} ${esc(i.first_name)}</td><td>${euro(i.total_cents)}</td><td>${euro(i.paid_cents)}</td><td>${esc(i.status)}${i.kind==='nota_credito'?' · Nota credito':''}</td><td><button data-bill-open="${esc(i.id)}">Dettagli / azioni</button></td></tr>`).join('')}</tbody></table></div>`:'<p>Nessuna fattura corrispondente.</p>';
+ $('#bill-pages').innerHTML=`<button id="bill-prev" ${data.page<=1?'disabled':''}>Precedente</button><span>Pagina ${data.page} / ${pages}</span><button id="bill-next" ${data.page>=pages?'disabled':''}>Successiva</button>`;
+ $('#bill-prev').onclick=()=>{billingFilters.page--;renderBilling()};$('#bill-next').onclick=()=>{billingFilters.page++;renderBilling()};
  $$('[data-bill-open]').forEach(b=>b.onclick=()=>billingDetail(b.dataset.billOpen));
- }catch(e){if(page==='fatture')$('#bill-list').textContent=e.message}
+ }catch(e){if(page==='fatture'&&list===$('#bill-list'))list.textContent=e.message}
 }
 const billingNatures=[['','Seleziona natura IVA'],['N1','N1 · Escluse art. 15'],['N2.1','N2.1 · Non soggette artt. 7–7-septies'],['N2.2','N2.2 · Non soggette altri casi'],['N3.1','N3.1 · Non imponibili esportazioni'],['N3.2','N3.2 · Non imponibili cessioni intracomunitarie'],['N3.3','N3.3 · Non imponibili San Marino'],['N3.4','N3.4 · Non imponibili assimilate'],['N3.5','N3.5 · Non imponibili dichiarazione d’intento'],['N3.6','N3.6 · Non imponibili altre operazioni'],['N4','N4 · Esenti'],['N5','N5 · Regime del margine'],['N6.1','N6.1 · Inversione contabile rottami'],['N6.2','N6.2 · Inversione contabile oro'],['N6.3','N6.3 · Inversione contabile subappalto'],['N6.4','N6.4 · Inversione contabile fabbricati'],['N6.5','N6.5 · Inversione contabile cellulari'],['N6.6','N6.6 · Inversione contabile elettronica'],['N6.7','N6.7 · Inversione contabile edilizia'],['N6.8','N6.8 · Inversione contabile energia'],['N6.9','N6.9 · Inversione contabile altri casi'],['N7','N7 · IVA assolta in altro Stato UE']];
 function billingNew(options={}){
@@ -71,7 +79,7 @@ function billingExportCsv(i,lines){
  if(i.status!=='emessa')return toast('Emetti prima il documento');
  const issuer=(()=>{try{return JSON.parse(i.issuer_snapshot||'{}')}catch{return {}}})();
  const customer=(()=>{try{return JSON.parse(i.customer_snapshot||'{}')}catch{return {}}})();
- const q=v=>'"'+String(v??'').replaceAll('"','""')+'"';
+ const q=v=>{let t=String(v??'');if(/^[\s]*[=+@-]|^[\t\r\n]/.test(t))t="'"+t;return '"'+t.replaceAll('"','""')+'"'};
  const columns=['Numero','Data','Emittente','Partita IVA','Cliente','CF cliente','Prestazione','Quantita','Prezzo unitario EUR','Aliquota IVA %','Natura IVA','Imponibile EUR','IVA EUR','Totale fattura EUR'];
  const rows=lines.map(l=>[`${i.series}/${i.sequence}/${i.year}`,i.issue_date,issuer.legal_name,issuer.vat_number,`${customer.first_name||''} ${customer.last_name||''}`.trim(),customer.cf,l.description,l.quantity,(l.unit_cents/100).toFixed(2),(l.vat_rate_bp/100).toFixed(2),l.vat_nature,(l.taxable_cents/100).toFixed(2),(l.vat_cents/100).toFixed(2),(i.total_cents/100).toFixed(2)]);
  const csv='\uFEFF'+[columns,...rows].map(row=>row.map(q).join(';')).join('\r\n');
@@ -96,7 +104,7 @@ function billingEditLines(invoiceId,existing,stamp){
    await api('v1/billing/invoices/'+invoiceId+'/lines','PUT',{lines,stamp_cents:Number(b.stamp_cents)});
    setTimeout(()=>{if(page==='fatture')renderBilling()},0);
   }));
-  $('#bill-add-line').onclick=()=>{if(draft.length>=30)return toast('Massimo 30 prestazioni');sync();draft.push({description:'',quantity:1,unit_eur:'0.00',vat_pct:'0',vat_nature:'N4'});show()};
+  $('#bill-add-line').onclick=()=>{if(draft.length>=30)return toast('Massimo 30 prestazioni');sync();draft.push({description:'',quantity:1,unit_eur:'0.00',vat_pct:'0',vat_nature:''});show()};
   $('#bill-remove-line').onclick=()=>{if(draft.length<=1)return toast('Almeno una prestazione');sync();draft.pop();show()};
   function sync(){const f=document.querySelector('.modal form');if(!f)return;const data=new FormData(f);draft.forEach((l,n)=>{l.description=String(data.get('desc_'+n)||'');l.quantity=String(data.get('qty_'+n)||'1');l.unit_eur=String(data.get('price_'+n)||'0');l.vat_pct=String(data.get('vat_'+n)||'0');l.vat_nature=String(data.get('nature_'+n)||'')});stamp=Number(data.get('stamp_cents')||0)}
  }
